@@ -18,19 +18,26 @@
 - **`runtime='nodejs'`** obrigatorio em toda rota/action que usa `node:crypto` (prontuario, anamnese, recibo PDF).
 - **Payload de webhook nao e autoritativo:** sempre re-consultar `GET /v3/payments/{id}` no Asaas antes de conciliar.
 - **Nenhum segredo com `NEXT_PUBLIC_`** fora da allowlist: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_LIVEKIT_URL`, `NEXT_PUBLIC_SITE_URL`.
-- **Conteudo clinico nunca em log.** CPF, tokens, payloads de webhook e segredos tambem nunca.
+- **Conteudo clinico nunca em log.** CPF, tokens, payloads de webhook e segredos tambem nunca. Usar `logger.ts` como unico ponto de log.
 - **`getUser()` sempre, `getSession()` nunca** em codigo server-side.
 - **Nenhuma funcao server aceita `patient_id`, `psychologist_id` ou `role` como parametro.** Sempre derivar de `getUser()`.
 - **Proibido `dangerouslySetInnerHTML`** em qualquer campo de prontuario/anamnese.
 - **Descricao de cobranca no Asaas neutra:** `Prestacao de servicos profissionais -- Ref. MM/AAAA`. Natureza clinica so no recibo.
 - **Token LiveKit apenas em memoria** (estado React). Nunca localStorage, sessionStorage, URL ou cookie.
 - **Assuntos de email por allowlist** (docs/talitha-architecture.md secao 8.3). Nenhum assunto revela terapia.
+- **RLS nao e column-level.** Transicoes de estado sensiveis em tabelas acessiveis ao paciente sempre por RPC `SECURITY DEFINER` de assinatura estreita, nunca UPDATE direto.
+- **Toda Server Action exportada usa wrapper** (`withPsychologist`/`withPatient`/`withPublicAction`). Middleware e guard de layout NAO sao a fronteira de autorizacao.
+- **MFA e `aal2`, nao enrollment.** Sessao so-senha nao passa o gate. Recuperacao de senha exige MFA challenge antes de efetivar.
+- **Nenhum segredo como `ARG`/`ENV` em nenhum stage do Dockerfile.** Segredos so como env de runtime injetada pelo EasyPanel.
+- **Proibido localStorage/sessionStorage/IndexedDB para campo clinico** (inclui rascunho de anotacoes da sessao).
+- **Plaintext clinico nunca em cache do Next.js.** `force-dynamic` + `no-store` em toda rota que decifra.
 
 ## Documentacao do Projeto
 
 - `docs/talitha-prd.md` -- produto, personas, MVP, compliance
 - `docs/talitha-user-stories.md` -- 36 stories em 5 epicos
 - `docs/talitha-security-review-prd.md` -- classificacao de dados, STRIDE, 42 issues, requisitos por modulo
+- `docs/talitha-security-review-architecture.md` -- review da arquitetura, 36 issues novos, 8 correcoes
 - `docs/talitha-design-system.md` -- tokens, tipografia, paleta, componentes (Atomic Design)
 - `docs/talitha-wireframes.md` -- 34 telas especificadas
 - `docs/talitha-navigation-flow.md` -- rotas, guards, maquinas de estado

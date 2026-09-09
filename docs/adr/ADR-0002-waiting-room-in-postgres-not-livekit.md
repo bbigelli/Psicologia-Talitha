@@ -14,27 +14,33 @@ Duas abordagens:
 
 **Sala de espera e estado no Postgres (`sessions.waiting_since`, `sessions.admitted_at`), fora do LiveKit. Nenhum token de midia e emitido antes de `admitted_at IS NOT NULL`.**
 
+**Invariante critica: RLS no Postgres e por linha, nao por coluna.** Uma policy `FOR UPDATE` autoriza escrita em **qualquer coluna** da linha. Se o paciente recebesse UPDATE em `sessions`, ele ganharia escrita em `admitted_at` (auto-admissao), `payment_status`, `status`, `scheduled_at` e `room_name` — derrubando todos os gates. Por isso, transicoes de estado passam **exclusivamente** por RPCs `SECURITY DEFINER` de assinatura estreita, e `REVOKE UPDATE ON sessions FROM authenticated, anon`.
+
 Fluxo:
 1. Paciente clica "Entrar" → pre-flight de dispositivos
-2. Paciente entra na sala de espera → `UPDATE sessions SET waiting_since = now()` (RLS: so propria sessao)
-3. Paciente faz polling do proprio registro a cada 3-5s (TanStack Query `refetchInterval`) sob RLS
-4. Psicologa ve fila de espera (Realtime apenas para ela) e admite → `UPDATE sessions SET admitted_at = now()`
+2. Paciente chama RPC `enter_waiting_room(p_session_id)` — a funcao valida ownership por `auth.uid()`, valida janela temporal e status, e escreve **exclusivamente** `waiting_since`. Nenhum UPDATE direto.
+3. Paciente faz polling do proprio registro a cada 3-5s (TanStack Query `refetchInterval`) sob RLS (SELECT apenas da propria sessao)
+4. Psicologa ve fila de espera (Realtime apenas para ela) e chama RPC `admit_patient(p_session_id)` — a funcao exige `role = 'psychologist'` e escreve **exclusivamente** `admitted_at`
 5. Paciente detecta `admitted_at != null` → solicita token LiveKit
 6. Edge Function verifica pre-condicao 8 (`admitted_at IS NOT NULL`) → emite token
 
 ## Alternativas descartadas
 
-- **Room do LiveKit como sala de espera:** o paciente ja teria credencial de midia (token) antes da admissao. Um token vazado ou reutilizado daria acesso ao room. Alem disso, o tempo de espera consumiria minutos do free tier (5.000 min/mes) — com 4 sessoes/dia de 50min + espera de 5min, o overhead de espera somaria ~100 min/mes desnecessarios. E o mais importante: em um room compartilhado, o LiveKit permitiria que participantes vissem metadados uns dos outros (presence), violando o isolamento.
+- **Room do LiveKit como sala de espera:** o paciente ja teria credencial de midia (token) antes da admissao. Um token vazado ou reutilizado daria acesso ao room. O tempo de espera consumiria minutos do free tier. Em um room compartilhado, o LiveKit permitiria que participantes vissem metadados uns dos outros (presence), violando o isolamento.
+
+- **UPDATE direto pelo paciente em `sessions` (v1.0 deste ADR):** RLS e por linha, nao por coluna. O paciente ganha escrita em `admitted_at`, `payment_status`, `status`, `scheduled_at` e `room_name` da propria sessao. Isso derruba o gate de admissao (auto-admissao) e habilita fraude financeira (`payment_status: 'paid'`). Identificado como Critico AC2 no Security Review da arquitetura.
 
 ## Consequencias
 
 **Positivas:**
-- Nenhuma credencial de midia existe antes da admissao — a superficie de ataque e eliminada, nao mitigada.
-- Nao ha objeto "sala de espera compartilhada" — nao ha como listar dois pacientes num mesmo canal.
-- RLS garante que o paciente ve apenas o proprio registro. Realtime (que nao tem RLS de dados por padrao) e restrito a psicologa.
+- Nenhuma credencial de midia existe antes da admissao.
+- Nao ha objeto "sala de espera compartilhada".
+- RLS garante que o paciente ve apenas o proprio registro.
 - Nao consome minutos do LiveKit durante a espera.
+- RPCs de assinatura estreita garantem que so as colunas autorizadas sao escritas.
 
 **Negativas:**
-- Polling a cada 3-5s gera queries pequenas ao Supabase. Volume insignificante (1 paciente esperando por vez).
+- Polling a cada 3-5s gera queries pequenas ao Supabase. Volume insignificante.
 - Latencia de admissao: ate 5s entre o clique da psicologa e o paciente perceber. Aceitavel.
-- A psicologa precisa de Realtime para ver a fila em tempo real, adicionando uma subscription client-side. Apenas no componente WaitingList.
+- Complexidade: RPCs SECURITY DEFINER em vez de UPDATE direto. Justificado pela criticidade do dado.
+- A psicologa precisa de Realtime para ver a fila em tempo real, adicionando uma subscription client-side.

@@ -1,8 +1,8 @@
 # Arquitetura: Talitha Psicologia
 
-**Versao:** 1.0
+**Versao:** 1.1
 **Data:** 2026-09-09
-**Referencia:** `docs/talitha-prd.md`, `docs/talitha-security-review-prd.md`, `docs/talitha-design-system.md`, `docs/talitha-navigation-flow.md`, `docs/talitha-user-stories.md`, `docs/decisions.md`
+**Referencia:** `docs/talitha-prd.md`, `docs/talitha-security-review-prd.md`, `docs/talitha-security-review-architecture.md`, `docs/talitha-design-system.md`, `docs/talitha-navigation-flow.md`, `docs/talitha-user-stories.md`, `docs/decisions.md`
 
 ---
 
@@ -10,7 +10,7 @@
 
 | Camada | Tecnologia | Versao/Observacao |
 |--------|-----------|-------------------|
-| Framework | Next.js 16 (App Router) | TypeScript strict |
+| Framework | Next.js 16 (App Router) | TypeScript strict; versao minima fixada contra CVE-2025-29927 (bypass de middleware) |
 | Estilizacao | Tailwind CSS + shadcn/ui | CSS variables para tema, dark mode via classe |
 | Icones | lucide-react | Unica lib de icones |
 | Notificacoes | sonner | Toast |
@@ -24,6 +24,7 @@
 | Video | LiveKit Cloud | Free tier 5.000 min/mes |
 | Pagamentos | Asaas | Sandbox -> Producao |
 | Email transacional | Resend | Lembretes, convites, notificacoes |
+| PDF | pdfkit ou pdf-lib | Recibo IRPF on-demand; **proibido** puppeteer/chromium (superficie de SSRF no processo com KEK) |
 | Deploy | EasyPanel | Container Docker (standalone output) |
 
 ---
@@ -34,10 +35,10 @@
 talitha-psicologia/
 ├── CLAUDE.md                           # Regras especificas do projeto
 ├── Dockerfile                          # Multi-stage build (install -> build -> run)
-├── next.config.ts                      # output: 'standalone', headers de seguranca
+├── next.config.ts                      # output: 'standalone', allowedOrigins, headers
 ├── tailwind.config.ts                  # Tokens do design system
 ├── tsconfig.json                       # strict: true
-├── package.json
+├── package.json                        # versao minima do Next.js fixada
 ├── package-lock.json                   # Versionado, nunca .gitignore
 ├── .env.example                        # Template sem valores reais
 ├── .gitignore                          # .env*, .env.local, .env.production
@@ -45,6 +46,7 @@ talitha-psicologia/
 ├── docs/                               # Documentos de planejamento (nao vao pro build)
 │   ├── talitha-prd.md
 │   ├── talitha-security-review-prd.md
+│   ├── talitha-security-review-architecture.md
 │   ├── talitha-architecture.md         # Este arquivo
 │   ├── talitha-design-system.md
 │   ├── talitha-wireframes.md
@@ -53,8 +55,7 @@ talitha-psicologia/
 │   ├── talitha-status.md
 │   ├── decisions.md
 │   └── adr/                            # Architecture Decision Records
-│       ├── ADR-0001-*.md
-│       └── ...
+│       ├── ADR-0001-*.md ... ADR-0006-*.md
 │
 ├── supabase/                           # Supabase local (CLI)
 │   ├── config.toml
@@ -63,20 +64,28 @@ talitha-psicologia/
 │   └── functions/                      # Edge Functions (Deno runtime)
 │       ├── asaas-webhook/              # Webhook de pagamento (verify_jwt=false)
 │       │   └── index.ts
+│       ├── create-charge/              # Criar cobranca no Asaas (verify_jwt=true)
+│       │   └── index.ts
+│       ├── retry-charges/              # Cron: retentar cobrancas pending_creation (verify_jwt=false, CRON_SECRET)
+│       │   └── index.ts
 │       ├── issue-livekit-token/        # Emissao de token de sala (verify_jwt=true)
 │       │   └── index.ts
 │       ├── delete-livekit-room/        # Encerramento de sala (verify_jwt=true)
 │       │   └── index.ts
 │       ├── send-reminders/             # Cron: lembretes 24h e 1h (verify_jwt=false, CRON_SECRET)
 │       │   └── index.ts
-│       └── billing-rules/              # Cron: regua de cobranca (verify_jwt=false, CRON_SECRET)
+│       ├── billing-rules/              # Cron: regua de cobranca (verify_jwt=false, CRON_SECRET)
+│       │   └── index.ts
+│       └── anchor-audit-log/           # Cron semanal: ancora externa do hash chain (verify_jwt=false, CRON_SECRET)
 │           └── index.ts
 │
 ├── public/                             # Assets estaticos
-│   └── robots.txt                      # Bloquear /portal, /dashboard, /pacientes, /financeiro
+│   └── robots.txt                      # Bloquear /portal, /dashboard, /pacientes, /financeiro,
+│                                       # /agenda, /perfil, /sala, /convite, /confirmar,
+│                                       # /termos, /onboarding, /mfa, /api
 │
 ├── src/
-│   ├── middleware.ts                    # Auth guard, role routing, headers de seguranca
+│   ├── middleware.ts                    # UX guard + defense-in-depth (NAO e a fronteira de autorizacao)
 │   │
 │   ├── app/                            # App Router — rotas e layouts
 │   │   ├── globals.css                 # Tokens CSS do design system
@@ -85,452 +94,186 @@ talitha-psicologia/
 │   │   ├── error.tsx                   # Error boundary global (client component)
 │   │   │
 │   │   ├── (auth)/                     # Route group: telas publicas e de autenticacao
-│   │   │   ├── layout.tsx              # AuthLayout (centralizado, card, logo)
-│   │   │   ├── login/
-│   │   │   │   └── page.tsx
-│   │   │   ├── mfa/
-│   │   │   │   ├── verify/
-│   │   │   │   │   └── page.tsx
-│   │   │   │   └── setup/
-│   │   │   │       └── page.tsx
-│   │   │   ├── convite/
-│   │   │   │   └── [token]/
-│   │   │   │       └── page.tsx        # Criar senha a partir do convite
-│   │   │   ├── confirmar/
-│   │   │   │   └── [token]/
-│   │   │   │       └── page.tsx        # Acao de e-mail (confirmar/cancelar) sem sessao
-│   │   │   └── recuperar-senha/
-│   │   │       └── page.tsx
+│   │   │   ├── layout.tsx              # AuthLayout
+│   │   │   ├── login/page.tsx
+│   │   │   ├── mfa/verify/page.tsx
+│   │   │   ├── mfa/setup/page.tsx
+│   │   │   ├── convite/[token]/page.tsx
+│   │   │   ├── confirmar/[token]/page.tsx   # GET renderiza; POST (Server Action) executa
+│   │   │   └── recuperar-senha/page.tsx
 │   │   │
 │   │   ├── (consent)/                  # Route group: fluxo de consentimento
-│   │   │   ├── layout.tsx              # ConsentLayout (sem nav, sem fuga)
+│   │   │   ├── layout.tsx              # ConsentLayout
 │   │   │   └── termos/
-│   │   │       ├── atendimento/
-│   │   │       │   └── page.tsx        # Termo CFP (etapa 1)
-│   │   │       └── lgpd/
-│   │   │           └── page.tsx        # Consentimento LGPD segmentado (etapa 2)
+│   │   │       ├── atendimento/page.tsx
+│   │   │       └── lgpd/page.tsx
 │   │   │
 │   │   ├── (psychologist)/             # Route group: painel da psicologa
-│   │   │   ├── layout.tsx              # PsychologistLayout (sidebar + guard)
-│   │   │   ├── onboarding/
-│   │   │   │   └── page.tsx
-│   │   │   ├── dashboard/
-│   │   │   │   └── page.tsx            # KPIs, grafico receita, cobrancas recentes
-│   │   │   ├── agenda/
-│   │   │   │   ├── page.tsx            # Visao semanal/diaria
-│   │   │   │   └── nova-sessao/
-│   │   │   │       └── page.tsx
-│   │   │   ├── pacientes/
-│   │   │   │   ├── page.tsx            # Lista de pacientes
-│   │   │   │   ├── novo/
-│   │   │   │   │   └── page.tsx
-│   │   │   │   └── [id]/
-│   │   │   │       ├── page.tsx        # Ficha com tabs (info/anamnese/historico/financeiro/log)
-│   │   │   │       └── evolucao/
-│   │   │   │           └── page.tsx    # Nova evolucao clinica (runtime='nodejs')
-│   │   │   ├── financeiro/
-│   │   │   │   ├── page.tsx            # Redirect para /financeiro/cobrancas
-│   │   │   │   ├── cobrancas/
-│   │   │   │   │   ├── page.tsx        # TanStack Table
-│   │   │   │   │   └── nova/
-│   │   │   │   │       └── page.tsx
-│   │   │   │   ├── assinaturas/
-│   │   │   │   │   └── page.tsx
-│   │   │   │   ├── inadimplentes/
-│   │   │   │   │   └── page.tsx
-│   │   │   │   └── recibos/
-│   │   │   │       └── page.tsx
-│   │   │   └── perfil/
-│   │   │       └── page.tsx            # Perfil, CRP, e-Psi
+│   │   │   ├── layout.tsx              # PsychologistLayout (reautoriza getUser+role)
+│   │   │   ├── onboarding/page.tsx
+│   │   │   ├── dashboard/page.tsx
+│   │   │   ├── agenda/page.tsx
+│   │   │   ├── agenda/nova-sessao/page.tsx
+│   │   │   ├── pacientes/page.tsx
+│   │   │   ├── pacientes/novo/page.tsx
+│   │   │   ├── pacientes/[id]/page.tsx         # runtime='nodejs', force-dynamic
+│   │   │   ├── pacientes/[id]/evolucao/page.tsx # runtime='nodejs', force-dynamic
+│   │   │   ├── financeiro/page.tsx
+│   │   │   ├── financeiro/cobrancas/page.tsx
+│   │   │   ├── financeiro/cobrancas/nova/page.tsx
+│   │   │   ├── financeiro/assinaturas/page.tsx
+│   │   │   ├── financeiro/inadimplentes/page.tsx
+│   │   │   ├── financeiro/recibos/page.tsx
+│   │   │   └── perfil/page.tsx
 │   │   │
 │   │   ├── (patient)/                  # Route group: portal do paciente
-│   │   │   ├── layout.tsx              # PatientLayout (header/bottom nav + guard)
+│   │   │   ├── layout.tsx              # PatientLayout (reautoriza getUser+role+consentimento)
 │   │   │   └── portal/
-│   │   │       ├── page.tsx            # Home: proximos compromissos + status
-│   │   │       ├── compromissos/
-│   │   │       │   └── page.tsx
-│   │   │       ├── anamnese/
-│   │   │       │   └── page.tsx
-│   │   │       ├── pagamentos/
-│   │   │       │   └── page.tsx
-│   │   │       ├── documentos/
-│   │   │       │   └── page.tsx
-│   │   │       ├── perfil/
-│   │   │       │   └── page.tsx        # Perfil + consentimentos + solicitacao LGPD
-│   │   │       └── dados/
-│   │   │           └── solicitar/
-│   │   │               └── page.tsx
+│   │   │       ├── page.tsx
+│   │   │       ├── compromissos/page.tsx
+│   │   │       ├── anamnese/page.tsx
+│   │   │       ├── pagamentos/page.tsx
+│   │   │       ├── documentos/page.tsx
+│   │   │       ├── perfil/page.tsx
+│   │   │       └── dados/solicitar/page.tsx
 │   │   │
 │   │   ├── (video)/                    # Route group: sala de video
-│   │   │   ├── layout.tsx              # VideoLayout (fullscreen, dark, sem nav)
-│   │   │   └── sala/
-│   │   │       └── [sessionId]/
-│   │   │           ├── preflight/
-│   │   │           │   └── page.tsx    # Teste de dispositivos
-│   │   │           ├── espera/
-│   │   │           │   └── page.tsx    # Sala de espera (paciente)
-│   │   │           └── page.tsx        # Sala de video
+│   │   │   ├── layout.tsx              # VideoLayout
+│   │   │   └── sala/[sessionId]/
+│   │   │       ├── preflight/page.tsx
+│   │   │       ├── espera/page.tsx
+│   │   │       └── page.tsx
 │   │   │
 │   │   └── api/                        # Route Handlers
-│   │       ├── auth/
-│   │       │   └── callback/
-│   │       │       └── route.ts        # Supabase Auth callback (PKCE)
-│   │       └── receipts/
-│   │           └── [id]/
-│   │               └── download/
-│   │                   └── route.ts    # PDF on-demand (runtime='nodejs', precisa KEK)
+│   │       ├── auth/callback/route.ts  # PKCE callback; valida redirect contra allowlist interna
+│   │       └── receipts/[id]/download/route.ts  # runtime='nodejs', no-store
 │   │
-│   ├── components/                     # Componentes React
-│   │   ├── ui/                         # shadcn/ui (atoms) — instalados via CLI
-│   │   ├── layouts/                    # Organismos de layout
-│   │   │   ├── psychologist-sidebar.tsx
-│   │   │   ├── psychologist-header.tsx
-│   │   │   ├── patient-header.tsx
-│   │   │   ├── patient-bottom-nav.tsx
-│   │   │   └── skip-to-content.tsx
-│   │   ├── auth/                       # Componentes de autenticacao
-│   │   │   ├── login-form.tsx
-│   │   │   ├── mfa-code-input.tsx
-│   │   │   ├── mfa-setup-wizard.tsx
-│   │   │   └── create-password-form.tsx
-│   │   ├── consent/                    # Consentimento
-│   │   │   ├── consent-section.tsx
-│   │   │   └── consent-flow.tsx
-│   │   ├── schedule/                   # Agenda
-│   │   │   ├── agenda-week-view.tsx
-│   │   │   ├── agenda-day-view.tsx
-│   │   │   ├── session-slot.tsx
-│   │   │   └── new-session-form.tsx
-│   │   ├── financial/                  # Financeiro
-│   │   │   ├── kpi-card.tsx
-│   │   │   ├── charges-table.tsx
-│   │   │   ├── new-charge-form.tsx
-│   │   │   ├── receipt-download-item.tsx
-│   │   │   └── revenue-chart.tsx
-│   │   ├── patients/                   # Pacientes
-│   │   │   ├── patient-card.tsx
-│   │   │   ├── patient-form.tsx
-│   │   │   └── patient-tabs.tsx
-│   │   ├── clinical/                   # Prontuario
-│   │   │   ├── clinical-record-entry.tsx
-│   │   │   ├── evolution-form.tsx
-│   │   │   └── anamnesis-form.tsx
-│   │   ├── video/                      # Sala de video
-│   │   │   ├── video-room.tsx
-│   │   │   ├── video-controls.tsx
-│   │   │   ├── waiting-room-view.tsx
-│   │   │   ├── waiting-list.tsx
-│   │   │   ├── device-selector.tsx
-│   │   │   ├── preflight-check.tsx
-│   │   │   ├── reconnection-overlay.tsx
-│   │   │   └── session-notes-panel.tsx
-│   │   └── shared/                     # Componentes reutilizaveis
-│   │       ├── status-badge.tsx
-│   │       ├── search-bar.tsx
-│   │       ├── empty-state.tsx
-│   │       └── error-fallback.tsx
+│   ├── components/                     # Componentes React (mesma estrutura da v1.0, omitida por brevidade)
+│   │   ├── ui/                         # shadcn/ui atoms
+│   │   ├── layouts/                    # Sidebar, header, bottom nav, skip-to-content
+│   │   ├── auth/ consent/ schedule/ financial/ patients/ clinical/ video/ shared/
 │   │
-│   ├── lib/                            # Logica de infraestrutura e dominio
+│   ├── lib/
 │   │   ├── supabase/
 │   │   │   ├── client.ts              # Browser client (anon key, RLS)
 │   │   │   ├── server.ts              # Server client (@supabase/ssr, cookies)
-│   │   │   └── middleware.ts          # Middleware client (refresh, cookies)
-│   │   ├── actions/                    # Server Actions (mutations)
-│   │   │   ├── auth.ts                # Login, MFA verify, convite
-│   │   │   ├── patients.ts            # CRUD pacientes
-│   │   │   ├── sessions.ts            # CRUD agendamentos
-│   │   │   ├── charges.ts             # Criar cobranca (chama Asaas via Edge Function)
-│   │   │   ├── clinical-records.ts    # CRUD evolucoes (cifra/decifra com KEK)
-│   │   │   ├── anamnesis.ts           # CRUD anamnese (cifra/decifra)
-│   │   │   ├── consents.ts            # Registrar aceite/revogacao
-│   │   │   ├── receipts.ts            # Consultar recibos
-│   │   │   └── profile.ts             # Atualizar perfil, onboarding
-│   │   ├── crypto/                     # Modulo de criptografia (runtime='nodejs')
-│   │   │   ├── envelope.ts            # AES-256-GCM: encrypt, decrypt, wrapDek, unwrapDek
-│   │   │   ├── blind-index.ts         # HMAC-SHA256 para CPF
-│   │   │   └── constants.ts           # Tamanhos de IV, tag, DEK; nomes de env vars
-│   │   ├── email/                      # Modulo de email (Resend SDK)
-│   │   │   ├── client.ts              # Resend client
-│   │   │   ├── templates.ts           # Templates com allowlist de assuntos
-│   │   │   └── send.ts               # Envio com validacao de politica de conteudo
-│   │   ├── permissions.ts             # can(), checkRole(), derivar patient_id de uid
-│   │   ├── audit.ts                   # Wrapper para chamar fn log_audit() do Postgres
-│   │   ├── constants.ts               # Allowlists, enums, limites
-│   │   └── utils.ts                   # Funcoes puras (formatacao, mascaramento de CPF)
+│   │   │   ├── middleware.ts          # Middleware client
+│   │   │   └── admin.ts              # UNICO modulo que instancia service_role client
+│   │   │                              # Importacao fora da allowlist = reprovacao em code review
+│   │   ├── actions/
+│   │   │   ├── _guard.ts             # withPsychologist(fn), withPatient(fn), withPublicAction(fn)
+│   │   │   ├── auth.ts
+│   │   │   ├── patients.ts
+│   │   │   ├── sessions.ts
+│   │   │   ├── charges.ts
+│   │   │   ├── clinical-records.ts
+│   │   │   ├── anamnesis.ts
+│   │   │   ├── consents.ts
+│   │   │   ├── receipts.ts
+│   │   │   └── profile.ts
+│   │   ├── crypto/
+│   │   │   ├── keys.ts               # Validacao e carregamento de KEK/CPF_INDEX_KEY no boot
+│   │   │   ├── envelope.ts           # AES-256-GCM
+│   │   │   ├── blind-index.ts        # HMAC-SHA256 para CPF
+│   │   │   └── constants.ts
+│   │   ├── email/
+│   │   │   ├── client.ts
+│   │   │   ├── templates.ts
+│   │   │   └── send.ts
+│   │   ├── logger.ts                  # UNICO ponto de log; allowlist de chaves serializaveis
+│   │   │                              # console.* fora deste modulo = reprovacao em code review
+│   │   ├── permissions.ts
+│   │   ├── audit.ts
+│   │   ├── constants.ts
+│   │   └── utils.ts
 │   │
-│   ├── hooks/                          # Custom hooks (client-side)
-│   │   ├── use-auth.ts                # Sessao, user, role
-│   │   ├── use-permissions.ts         # can() client-side (UX, nao seguranca)
-│   │   ├── use-sessions.ts            # TanStack Query: agendamentos
-│   │   ├── use-patients.ts            # TanStack Query: pacientes
-│   │   ├── use-charges.ts             # TanStack Query: cobrancas
-│   │   ├── use-waiting-room.ts        # Polling 3-5s do proprio registro sob RLS
-│   │   ├── use-device-check.ts        # Permissoes de camera/mic
-│   │   └── use-livekit.ts             # Conexao LiveKit + estado de midia
-│   │
-│   ├── schemas/                        # Schemas zod (validacao em toda boundary)
-│   │   ├── auth.ts                    # Login, MFA, convite, senha
-│   │   ├── patient.ts                 # Cadastro, edicao, validacao idade >= 18
-│   │   ├── session.ts                 # Agendamento, cancelamento, remarcacao
-│   │   ├── charge.ts                  # Cobranca: valor > 0, vencimento >= hoje
-│   │   ├── clinical-record.ts         # Evolucao, anamnese
-│   │   ├── consent.ts                 # Aceite, revogacao
-│   │   ├── profile.ts                 # Onboarding, perfil
-│   │   └── common.ts                  # uuid, cpf, crp, phone, date
-│   │
-│   ├── types/                          # TypeScript types/interfaces
-│   │   ├── database.ts                # Gerado pelo Supabase CLI (supabase gen types)
-│   │   ├── domain.ts                  # Tipos de dominio derivados dos schemas
-│   │   ├── auth.ts                    # Role, UserProfile, Session
-│   │   └── livekit.ts                 # Grants, token request/response
-│   │
-│   └── contexts/                       # React Context (estado global client-side)
-│       ├── auth-context.tsx           # User, role, sessao
-│       └── permissions-context.tsx    # Permissoes derivadas do role
-
+│   ├── hooks/                          # (mesma estrutura da v1.0)
+│   ├── schemas/                        # (mesma estrutura da v1.0)
+│   ├── types/                          # (mesma estrutura da v1.0)
+│   └── contexts/                       # (mesma estrutura da v1.0)
 ```
-
-### 2.1 Convencoes de nomenclatura
-
-| Elemento | Padrao | Exemplo |
-|----------|--------|---------|
-| Arquivo | kebab-case | `clinical-record-entry.tsx` |
-| Componente React | PascalCase | `ClinicalRecordEntry` |
-| Hook | camelCase com `use` | `useWaitingRoom` |
-| Server Action | camelCase | `createPatient`, `submitEvolution` |
-| Schema zod | camelCase com `Schema` | `patientFormSchema` |
-| Tipo/Interface | PascalCase | `PatientProfile`, `SessionStatus` |
-| Constante | UPPER_SNAKE_CASE | `EMAIL_SUBJECTS`, `MAX_RETRY` |
-| Variavel de ambiente | UPPER_SNAKE_CASE | `RECORD_ENCRYPTION_KEK_V1` |
-| Edge Function | kebab-case (pasta) | `asaas-webhook/index.ts` |
 
 ---
 
 ## 3. Padrao de Rotas
 
-### 3.1 Tabela de rotas
+(Tabela identica a v1.0 com as seguintes adicoes/correcoes:)
 
-| URL | Arquivo | Layout | Guard | Runtime |
-|-----|---------|--------|-------|---------|
-| `/` | `app/page.tsx` (redirect) | - | - | edge |
-| `/login` | `app/(auth)/login/page.tsx` | AuthLayout | publico | edge |
-| `/mfa/verify` | `app/(auth)/mfa/verify/page.tsx` | AuthLayout | auth (pre-MFA) | edge |
-| `/mfa/setup` | `app/(auth)/mfa/setup/page.tsx` | AuthLayout | auth (pre-MFA) | edge |
-| `/convite/[token]` | `app/(auth)/convite/[token]/page.tsx` | AuthLayout | publico | edge |
-| `/confirmar/[token]` | `app/(auth)/confirmar/[token]/page.tsx` | AuthLayout | publico (token opaco) | edge |
-| `/recuperar-senha` | `app/(auth)/recuperar-senha/page.tsx` | AuthLayout | publico | edge |
-| `/termos/atendimento` | `app/(consent)/termos/atendimento/page.tsx` | ConsentLayout | auth + patient | edge |
-| `/termos/lgpd` | `app/(consent)/termos/lgpd/page.tsx` | ConsentLayout | auth + patient | edge |
-| `/onboarding` | `app/(psychologist)/onboarding/page.tsx` | PsychologistLayout | auth + psychologist | edge |
-| `/dashboard` | `app/(psychologist)/dashboard/page.tsx` | PsychologistLayout | auth + psychologist + MFA + onboarding | edge |
-| `/agenda` | `app/(psychologist)/agenda/page.tsx` | PsychologistLayout | auth + psychologist | edge |
-| `/agenda/nova-sessao` | `app/(psychologist)/agenda/nova-sessao/page.tsx` | PsychologistLayout | auth + psychologist | edge |
-| `/pacientes` | `app/(psychologist)/pacientes/page.tsx` | PsychologistLayout | auth + psychologist | edge |
-| `/pacientes/novo` | `app/(psychologist)/pacientes/novo/page.tsx` | PsychologistLayout | auth + psychologist | edge |
-| `/pacientes/[id]` | `app/(psychologist)/pacientes/[id]/page.tsx` | PsychologistLayout | auth + psychologist | **nodejs** |
-| `/pacientes/[id]/evolucao` | `app/(psychologist)/pacientes/[id]/evolucao/page.tsx` | PsychologistLayout | auth + psychologist | **nodejs** |
-| `/financeiro` | `app/(psychologist)/financeiro/page.tsx` | PsychologistLayout | auth + psychologist | edge |
-| `/financeiro/cobrancas` | `app/(psychologist)/financeiro/cobrancas/page.tsx` | PsychologistLayout | auth + psychologist | edge |
-| `/financeiro/cobrancas/nova` | `app/(psychologist)/financeiro/cobrancas/nova/page.tsx` | PsychologistLayout | auth + psychologist | edge |
-| `/financeiro/assinaturas` | `app/(psychologist)/financeiro/assinaturas/page.tsx` | PsychologistLayout | auth + psychologist | edge |
-| `/financeiro/inadimplentes` | `app/(psychologist)/financeiro/inadimplentes/page.tsx` | PsychologistLayout | auth + psychologist | edge |
-| `/financeiro/recibos` | `app/(psychologist)/financeiro/recibos/page.tsx` | PsychologistLayout | auth + psychologist | edge |
-| `/perfil` | `app/(psychologist)/perfil/page.tsx` | PsychologistLayout | auth + psychologist | edge |
-| `/portal` | `app/(patient)/portal/page.tsx` | PatientLayout | auth + patient + consentimento | edge |
-| `/portal/compromissos` | `app/(patient)/portal/compromissos/page.tsx` | PatientLayout | auth + patient + consentimento | edge |
-| `/portal/anamnese` | `app/(patient)/portal/anamnese/page.tsx` | PatientLayout | auth + patient + consentimento | edge |
-| `/portal/pagamentos` | `app/(patient)/portal/pagamentos/page.tsx` | PatientLayout | auth + patient + consentimento | edge |
-| `/portal/documentos` | `app/(patient)/portal/documentos/page.tsx` | PatientLayout | auth + patient + consentimento | edge |
-| `/portal/perfil` | `app/(patient)/portal/perfil/page.tsx` | PatientLayout | auth + patient + consentimento | edge |
-| `/portal/dados/solicitar` | `app/(patient)/portal/dados/solicitar/page.tsx` | PatientLayout | auth + patient + consentimento | edge |
-| `/sala/[sessionId]/preflight` | `app/(video)/sala/[sessionId]/preflight/page.tsx` | VideoLayout | auth + owner da sessao | edge |
-| `/sala/[sessionId]/espera` | `app/(video)/sala/[sessionId]/espera/page.tsx` | VideoLayout | auth + patient + owner | edge |
-| `/sala/[sessionId]` | `app/(video)/sala/[sessionId]/page.tsx` | VideoLayout | auth + owner + admitido | edge |
-| `POST /api/auth/callback` | `app/api/auth/callback/route.ts` | - | publico (PKCE) | edge |
-| `GET /api/receipts/[id]/download` | `app/api/receipts/[id]/download/route.ts` | - | auth + owner | **nodejs** |
-
-**Rotas com `runtime='nodejs'`:** apenas as que precisam de `node:crypto` para criptografia (prontuario, anamnese, recibo com CPF). Todas as demais usam o Edge Runtime padrao para menor latencia.
-
-### 3.2 Route groups e layouts
-
-| Route Group | Proposito | Layout | Guard aplicado no layout |
-|-------------|-----------|--------|--------------------------|
-| `(auth)` | Login, MFA, convite, confirmacao, reset | AuthLayout: card centralizado, logo, sem nav | Nenhum (publico) |
-| `(consent)` | Termos CFP e LGPD | ConsentLayout: sem nav, sem links de fuga | Auth + patient |
-| `(psychologist)` | Painel administrativo | PsychologistLayout: sidebar + header | Auth + psychologist + MFA + onboarding |
-| `(patient)` | Portal do paciente | PatientLayout: header/bottom nav | Auth + patient + consentimento vigente |
-| `(video)` | Pre-flight, espera, sala | VideoLayout: fullscreen, dark, sem nav | Auth + owner da sessao |
+- `/pacientes/[id]` e `/pacientes/[id]/evolucao`: adicionado `export const dynamic = 'force-dynamic'` e `export const fetchCache = 'force-no-store'`
+- `GET /api/receipts/[id]/download`: responde com `Cache-Control: private, no-store, max-age=0`, `Content-Disposition: attachment`
+- `/confirmar/[token]`: GET **apenas renderiza** tela de confirmacao; POST (Server Action publica) efetiva a acao
 
 ---
 
 ## 4. Fronteiras de Confianca
 
-O sistema opera em 4 dominios de confianca distintos. Cada peca de dados e logica vive no dominio que oferece a protecao adequada.
+(Diagrama identico a v1.0 com adicao de `create-charge`, `retry-charges`, `anchor-audit-log` na camada Edge Functions, e `admin.ts` na camada Next.js.)
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│  BROWSER (nao confiavel)                                                 │
-│  - Supabase client com anon key (RLS protege, nao o segredo)             │
-│  - TanStack Query cache (dados ja filtrados por RLS)                     │
-│  - LiveKit SDK (token em memoria, nunca localStorage)                    │
-│  - React Context (role, permissoes — UX, nao seguranca)                  │
-│  - Nenhum segredo, nenhum dado clinico em claro, nenhum CPF em claro     │
-│  - Zod no form e pre-validacao de UX; NUNCA unica camada de validacao    │
-└──────────────────────────────┬───────────────────────────────────────────┘
-                               │ HTTPS (TLS)
-┌──────────────────────────────┴───────────────────────────────────────────┐
-│  NEXT.JS SERVER (confiavel — EasyPanel container)                        │
-│  - Middleware: auth guard, role check, redirect, headers HTTP             │
-│  - Server Components: busca de dados com supabase server client           │
-│  - Server Actions: mutations, validacao zod server-side, audit log        │
-│  - Route Handlers: auth callback, receipt PDF download                    │
-│  - Modulo crypto: AES-256-GCM (encrypt/decrypt com KEK do EasyPanel)     │
-│  - Email: Resend SDK (convite, notificacao — user-initiated)              │
-│  - Segredos: SUPABASE_SERVICE_ROLE_KEY, KEK, CPF_INDEX_KEY, RESEND_API_KEY│
-│  - Runtime: Node.js para rotas que cifram; Edge para as demais            │
-└──────────────────────────────┬───────────────────────────────────────────┘
-                               │ HTTPS (Supabase client over TLS)
-┌──────────────────────────────┴───────────────────────────────────────────┐
-│  SUPABASE EDGE FUNCTIONS (confiavel — dominio Supabase)                  │
-│  - asaas-webhook: validacao de token, re-consulta Asaas, conciliacao     │
-│  - issue-livekit-token: 8 pre-condicoes, emissao de JWT LiveKit          │
-│  - delete-livekit-room: encerramento de sala                             │
-│  - send-reminders / billing-rules: cron com CRON_SECRET                  │
-│  - Segredos: ASAAS_API_KEY, ASAAS_WEBHOOK_TOKEN, LIVEKIT_API_KEY/SECRET │
-│  - CRON_SECRET, RESEND_API_KEY (para cron-based emails)                  │
-│  - Runtime: Deno                                                          │
-│  - NUNCA tem acesso a KEK nem a CPF_INDEX_KEY                            │
-└──────────────────────────────┬───────────────────────────────────────────┘
-                               │ Conexao interna (pool)
-┌──────────────────────────────┴───────────────────────────────────────────┐
-│  SUPABASE POSTGRES (confiavel — dado em repouso)                         │
-│  - RLS em TODAS as tabelas (0 tabelas sem RLS)                           │
-│  - FORCE ROW LEVEL SECURITY no audit_log                                 │
-│  - Triggers de bloqueio (UPDATE/DELETE/TRUNCATE no audit_log)            │
-│  - REVOKE explicito                                                       │
-│  - Funcoes SECURITY DEFINER para audit log e processamento de webhook    │
-│  - Hash chain no audit_log                                                │
-│  - Ciphertext de prontuario (ilegivel sem a KEK que esta no EasyPanel)   │
-│  - Blind index de CPF (inutil sem CPF_INDEX_KEY que esta no EasyPanel)   │
-└──────────────────────────────────────────────────────────────────────────┘
-```
+### 4.1–4.3 (Inalterados da v1.0)
 
-### 4.1 Por que a criptografia fica no Next.js (Node) e nao em Edge Function
+### 4.4 Invariante critica: RLS nao e column-level
 
-1. **Separacao de dominio de confianca:** a KEK deve residir fora do Supabase (Security Review secao 3). Se a criptografia rodasse em Edge Function, a KEK teria que ir para `supabase secrets` — no mesmo dominio do dado. Um vazamento de `SUPABASE_SERVICE_ROLE_KEY` exporia dado E chave.
-2. **Runtime:** AES-256-GCM com AAD customizado, IV explicito e envelope encryption exige `node:crypto`. O Edge Runtime do Next.js nao expoe `node:crypto` completo. Declarar `export const runtime = 'nodejs'` e requisito.
-3. **Custo aceito:** rotas de prontuario usam Node runtime (cold start ~200ms vs ~50ms do Edge). Volume real (20-30 pacientes) absorve sem impacto perceptivel.
+**RLS no Postgres e por linha, nao por coluna.** Uma policy `FOR UPDATE USING (patient_id = ...)` autoriza o usuario a escrever **qualquer coluna** daquela linha. Consequencia: se o paciente receber UPDATE em `sessions` (sua propria sessao), ele ganha escrita em `admitted_at` (auto-admissao), `payment_status` (fraude financeira), `status`, `scheduled_at` e `room_name` — derrubando todos os gates que existem para protege-los.
 
-### 4.2 Por que o webhook do Asaas fica em Edge Function e nao em Route Handler
-
-1. **Segredos no dominio correto:** `ASAAS_API_KEY` e `ASAAS_WEBHOOK_TOKEN` sao segredos de integracao de pagamento. Mantendo-os em `supabase secrets`, eles nao precisam cruzar para o EasyPanel. O webhook nao precisa da KEK (nao toca em prontuario).
-2. **`verify_jwt = false` nativo:** Edge Functions do Supabase permitem desabilitar verificacao JWT por funcao. Um Route Handler no Next.js nao tem esse conceito — qualquer request chega.
-3. **Isolamento:** a Edge Function tem escopo minimo de escrita (via funcao `SECURITY DEFINER` no Postgres) e nao compartilha memoria nem processo com o resto da aplicacao.
-4. **Latencia:** Edge Functions do Supabase estao no mesmo datacenter do Postgres. O webhook valida, re-consulta o Asaas (rede externa) e escreve — tudo dentro do SLA de 2s.
-
-### 4.3 Por que a emissao de token LiveKit fica em Edge Function
-
-1. **Segredos:** `LIVEKIT_API_KEY` e `LIVEKIT_API_SECRET` sao segredos de integracao que pertencem ao dominio Supabase (`supabase secrets`).
-2. **Verificacao server-side:** as 8 pre-condicoes de emissao (secao 5 do Security Review) exigem consultar `sessions`, `patients`, `consents` — todas protegidas por RLS, mas a funcao precisa de `service_role` para verificar em nome do usuario. Edge Function com `verify_jwt = true` extrai o `uid` do JWT do Supabase Auth.
-3. **Compatibilidade:** LiveKit Server SDK roda em Deno (validado em `docs/decisions.md`).
+**Regra absoluta:** transicoes de estado sensiveis em tabelas acessiveis ao paciente **nunca** por UPDATE direto. Sempre por RPC `SECURITY DEFINER` de assinatura estreita que escreve exclusivamente as colunas autorizadas. O browser client do Supabase (anon key) nao recebe grant de UPDATE em tabelas com colunas sensiveis — o acesso e via RPC.
 
 ---
 
 ## 5. Padrao de Modulo de Dominio
 
-Todo modulo segue o mesmo esqueleto. Exemplo concreto: **Modulo de Pacientes**.
+(Esqueleto identico a v1.0.)
 
-```
-1. Schema zod (src/schemas/patient.ts)
-   - Define a forma dos dados + validacao
-   - Exporta o schema E o tipo inferido (z.infer<typeof ...>)
-   - Usado no client (form) E no server (Server Action)
-
-2. Server Action (src/lib/actions/patients.ts)
-   - Recebe FormData ou objeto tipado
-   - Valida com o schema zod
-   - Chama Supabase server client (com getUser() — nunca getSession())
-   - Cifra campos sensiveis (CPF via envelope.ts + blind-index.ts)
-   - Chama audit (log_audit) na mesma transacao se for escrita
-   - Revalida cache (revalidatePath / revalidateTag)
-   - Retorna resultado tipado ou erro
-
-3. Hook TanStack Query (src/hooks/use-patients.ts)
-   - useQuery para leitura (Supabase browser client, RLS filtra)
-   - useMutation chamando Server Actions para escrita
-   - Invalidacao de cache apos mutacao
-
-4. Componentes (src/components/patients/*.tsx)
-   - Server Components para listagens (fetch direto no server)
-   - Client Components para forms e interacoes
-   - Usam o hook e o schema
-```
-
-### 5.1 Exemplo ponta a ponta — Cadastrar paciente
+### 5.1 Exemplo ponta a ponta — Cadastrar paciente (corrigido)
 
 ```typescript
-// 1. Schema (src/schemas/patient.ts)
-export const createPatientSchema = z.object({
-  full_name: z.string().min(3).max(200),
-  email: z.string().email(),
-  phone: z.string().regex(/^\d{10,11}$/),
-  cpf: z.string().refine(isValidCpf, 'CPF invalido'),
-  date_of_birth: z.string().date().refine(
-    (d) => differenceInYears(new Date(), new Date(d)) >= 18,
-    'Paciente deve ter 18 anos ou mais'
-  ),
-})
-export type CreatePatientInput = z.infer<typeof createPatientSchema>
+// 1. Schema (src/schemas/patient.ts) — inalterado
 
 // 2. Server Action (src/lib/actions/patients.ts)
 'use server'
-export async function createPatient(input: CreatePatientInput) {
+import { withPsychologist } from './_guard'
+
+export const createPatient = withPsychologist(async (ctx, input: CreatePatientInput) => {
+  // ctx.user, ctx.profile ja verificados pelo wrapper
   const parsed = createPatientSchema.parse(input)
-  const supabase = await createServerClient()
-  const { data: { user } } = await supabase.auth.getUser() // NUNCA getSession()
-  if (!user) throw new Error('Unauthorized')
 
-  // Verificar role server-side
-  const profile = await getProfile(supabase, user.id)
-  if (profile.role !== 'psychologist') throw new Error('Forbidden')
+  // Gerar UUID do paciente ANTES de cifrar (AAD depende do patient_id)
+  const patientId = crypto.randomUUID()
 
-  // Cifrar CPF
+  // Cifrar CPF com o patientId ja definido
   const cpfHmac = computeBlindIndex(parsed.cpf)
   const cpfCiphertext = encryptField(parsed.cpf, patientId, 'cpf')
 
-  // Inserir paciente (RLS + audit na mesma transacao via RPC)
-  const { data, error } = await supabase.rpc('create_patient_with_audit', { ... })
+  // Inserir paciente via RPC (audit na mesma transacao)
+  const { data, error } = await ctx.supabase.rpc('create_patient_with_audit', {
+    p_id: patientId,
+    // ... demais campos
+  })
 
   // Enviar convite por email
   await sendInviteEmail(parsed.email, parsed.full_name, inviteToken)
 
   revalidatePath('/pacientes')
-  return { success: true, patientId: data.id }
-}
+  return { success: true, patientId }
+})
 
-// 3. Hook (src/hooks/use-patients.ts) — usado em Client Components
-export function useCreatePatient() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: createPatient,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['patients'] })
-      toast.success('Paciente cadastrado com sucesso')
-    },
-    onError: (err) => {
-      toast.error('Nao foi possivel cadastrar o paciente. Tente novamente.')
-    },
-  })
-}
+// 3. Wrapper (src/lib/actions/_guard.ts)
+export function withPsychologist<T, R>(
+  fn: (ctx: PsychologistContext, input: T) => Promise<R>
+) {
+  return async (input: T): Promise<R> => {
+    const supabase = await createServerClient()
+    const { data: { user }, error } = await supabase.auth.getUser()
+    if (error || !user) throw new ActionError('Unauthorized')
 
-// 4. Componente (src/components/patients/patient-form.tsx)
-'use client'
-export function PatientForm() {
-  const form = useForm<CreatePatientInput>({
-    resolver: zodResolver(createPatientSchema),
-  })
-  const mutation = useCreatePatient()
-  // ... render form com react-hook-form
+    const profile = await getProfile(supabase, user.id)
+    if (profile.role !== 'psychologist') throw new ActionError('Forbidden')
+
+    // Verificar aal2 para acoes sobre dados clinicos
+    const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+    if (aal?.currentLevel !== 'aal2') throw new ActionError('MFA required')
+
+    return fn({ user, profile, supabase }, input)
+  }
 }
 ```
 
@@ -540,31 +283,29 @@ export function PatientForm() {
 
 ### 6.1 Quando usar cada abordagem
 
-| Cenario | Abordagem | Cliente | Razao |
-|---------|-----------|---------|-------|
-| Buscar lista de pacientes (psicologa) | Server Component (async) | supabase server client | Dados sensiveis renderizados no server; RLS filtra |
-| Buscar proximos compromissos (paciente) | Server Component ou TanStack Query | server ou browser client | RLS filtra automaticamente por `auth.uid()` |
-| Polling da sala de espera (paciente) | TanStack Query com `refetchInterval: 3000` | browser client | Precisa de atualizacao periodica no client |
-| Fila da sala de espera (psicologa) | Supabase Realtime | browser client | Realtime apenas para a psicologa, que ve todos |
-| Criar/editar paciente | Server Action | supabase server client | Mutation com cifra de CPF e audit log |
-| Registrar evolucao clinica | Server Action (`runtime='nodejs'`) | supabase server client | Cifra com KEK (node:crypto) |
-| Ler evolucao clinica | Server Component (`runtime='nodejs'`) | supabase server client | Decifra com KEK; ciphertext nunca sai do server |
-| Gerar cobranca no Asaas | Server Action → `supabase.functions.invoke` | supabase server → Edge Function | Asaas API key em supabase secrets |
-| Download de recibo PDF | Route Handler (`runtime='nodejs'`) | supabase server client | Decifra CPF para o recibo; gera PDF on-demand |
+(Tabela identica a v1.0 com a seguinte correcao:)
+
+| Cenario | Abordagem | Razao |
+|---------|-----------|-------|
+| Marcar presenca na sala de espera | RPC `SECURITY DEFINER` `enter_waiting_room(session_id)` | **Nunca UPDATE direto** — RLS nao e column-level (secao 4.4) |
+| Admitir paciente | RPC `SECURITY DEFINER` `admit_patient(session_id)` | Idem — so psicologa, verifica role no banco |
+| Cancelar/remarcar sessao | RPC `SECURITY DEFINER` `cancel_session(session_id)` | Verifica ownership, politica de prazo, e regras de estado |
 
 ### 6.2 Regras de acesso
 
-1. **`SUPABASE_SERVICE_ROLE_KEY`** so aparece em:
-   - Server Actions (quando precisa bypassar RLS para operacoes transacionais)
-   - Route Handlers (receipt download)
-   - Funcoes `SECURITY DEFINER` no Postgres (chamadas por Edge Functions)
-   - **NUNCA** em `NEXT_PUBLIC_*`, **NUNCA** em componente client, **NUNCA** em log
+1. **`SUPABASE_SERVICE_ROLE_KEY`** — allowlist fechada de uso. O client padrao de Server Actions e Route Handlers e o **client do usuario** (`@supabase/ssr`, RLS ativa). `service_role` permitido **apenas** em:
+   - Criacao do auth user no convite (Server Action `createPatient`)
+   - Leitura de sessao pela Edge Function `issue-livekit-token` (precisa verificar sessao de qualquer usuario)
+   - Escrita transacional do webhook `asaas-webhook` (via funcao `SECURITY DEFINER`)
+   - Edge Function `create-charge` (leitura do registro de cobranca)
+   - Instanciado **exclusivamente** em `src/lib/supabase/admin.ts`. Importacao deste modulo fora da allowlist = reprovacao em code review
+   - Preferir **RPC `SECURITY DEFINER` com JWT do usuario** a client `service_role` — mantem `auth.uid()` e o audit log correto
 
-2. **`getUser()` sempre, `getSession()` nunca** em codigo server-side. `getSession()` nao revalida o JWT e aceita sessao revogada.
+2. **`getUser()` sempre, `getSession()` nunca** em codigo server-side.
 
-3. **Nenhum endpoint server aceita `patient_id`, `psychologist_id` ou `role` como parametro.** Sempre derivar de `getUser()` → `auth.uid()` → resolver via query.
+3. **Nenhum endpoint server aceita `patient_id`, `psychologist_id` ou `role` como parametro.** Sempre derivar de `getUser()`.
 
-4. **React Query + RLS:** o browser client do Supabase usa a anon key. Todas as queries sao filtradas por RLS automaticamente. O React Query cacheia os dados ja filtrados — o cache nunca contem dado de outro usuario.
+4. **React Query + RLS + lista de colunas:** queries do browser client sempre com **lista explicita de colunas** — `select('*')` **proibido** em tabelas com campos cifrados. Colunas de ciphertext/DEK/HMAC nao devem ser selecionaveis pelo client (REVOKE de coluna ou views sem elas).
 
 ---
 
@@ -572,88 +313,87 @@ export function PatientForm() {
 
 ### 7.1 Middleware (`src/middleware.ts`)
 
-O middleware roda em **toda** request (exceto assets estaticos). Logica:
+**O middleware e UX + defense-in-depth. NAO e a fronteira de autorizacao.** A fronteira esta nas Server Actions (wrappers), nos layouts (que reautorizam) e na RLS do banco. O middleware pode ser bypassado (classe CVE-2025-29927) e nao cobre Server Actions.
 
 ```
 1. Criar supabase middleware client (refresh de cookies)
-2. Chamar supabase.auth.getUser() — revalida o JWT
+2. try { getUser() } catch { → Redirect /login } — fail-closed em QUALQUER erro
 
-3. Se rota publica (/login, /convite/*, /confirmar/*, /recuperar-senha, /api/auth/callback):
-   → Permitir (se ja autenticado E rota de login, redirect para destino por role)
+3. Se rota publica: → Permitir
 
-4. Se nao autenticado:
-   → Redirect /login
+4. Se nao autenticado: → Redirect /login
 
-5. Obter role do user (app_metadata.role ou profiles.role)
+5. Obter role do user (profiles.role — fonte canonica)
 
 6. Se role = psychologist:
-   a. MFA nao configurado? → Redirect /mfa/setup
-   b. Acessando /portal/*? → Redirect /dashboard
-   c. Onboarding nao concluido? → Redirect /onboarding
-   d. Permitir
+   a. aal < aal2? → Redirect /mfa/verify (verifica NIVEL DE GARANTIA, nao enrollment)
+   b. Fator TOTP nao cadastrado? → Redirect /mfa/setup
+   c. Acessando /portal/*? → Redirect /dashboard
+   d. Onboarding nao concluido? → Redirect /onboarding
+   e. Permitir
 
 7. Se role = patient:
-   a. Consentimento nao vigente? → Redirect /termos/atendimento (ou /termos/lgpd)
-   b. Acessando /dashboard, /pacientes/*, /financeiro/*, /agenda/*? → Redirect /portal
+   a. Consentimento nao vigente? → Redirect /termos/atendimento
+   b. Acessando rotas da psicologa? → Redirect /portal
    c. Permitir
 
-8. Role desconhecido? → Redirect /login + invalidar sessao
+8. Role desconhecido ou erro de role: → Redirect /login + invalidar sessao
 
-9. Em TODAS as responses: adicionar headers de seguranca (ver 7.4)
+9. Adicionar headers de seguranca
+
+matcher: excluir assets estaticos (/_next/static, /favicon.ico, etc.)
 ```
 
-### 7.2 Guards de rota por perfil
+### 7.2 Guards de rota — defesa em camadas
 
-| Perfil | Rotas permitidas | Guard |
-|--------|-----------------|-------|
-| Nao autenticado | `/login`, `/convite/*`, `/confirmar/*`, `/recuperar-senha` | - |
-| Psychologist (pre-MFA) | `/mfa/setup`, `/mfa/verify` | auth |
-| Psychologist (pre-onboarding) | `/onboarding` | auth + MFA |
-| Psychologist (completo) | `/dashboard`, `/agenda/*`, `/pacientes/*`, `/financeiro/*`, `/perfil`, `/sala/*` | auth + MFA + onboarding |
-| Patient (pre-consentimento) | `/termos/*` | auth |
-| Patient (completo) | `/portal/*`, `/sala/*` | auth + consentimento vigente |
+**Toda pagina/layout de area protegida repete `getUser()` + role antes de qualquer query.** Toda Server Action usa wrapper obrigatorio (`withPsychologist` / `withPatient` / `withPublicAction`). O middleware e a primeira barreira, nao a unica.
 
-Regra: **fail-closed**. Se qualquer verificacao falha, a rota e negada com redirect. Se o role e desconhecido, a sessao e invalidada.
+| Camada | O que verifica | Falha |
+|--------|---------------|-------|
+| Middleware | Sessao, role, MFA, consentimento (UX) | Redirect |
+| Layout do route group | `getUser()` + role + aal (reautorizacao) | Redirect |
+| Server Action wrapper | `getUser()` + role + aal (fronteira real) | Throw error |
+| RLS no Postgres | Policies por tabela | Query retorna vazio |
+| RLS `aal2` em policies clinicas | `(auth.jwt()->>'aal') = 'aal2'` | Query retorna vazio |
 
 ### 7.3 MFA TOTP para a psicologa
 
-- Supabase Auth nativo: `supabase.auth.mfa.enroll()`, `verify()`, `challenge()`
-- Obrigatorio para `role = 'psychologist'` — bloqueante no middleware
-- Opcional para `role = 'patient'` (fora do MVP)
-- Recovery codes gerados no enrollment, exibidos uma vez
-- Reautenticacao (MFA challenge) exigida em: `PURGE_RECORD`, `EXPORT_DATA`, `END_TREATMENT`
+- Gate de MFA: verifica **nivel de garantia (`aal2`)**, nao enrollment. Usar `mfa.getAuthenticatorAssuranceLevel()` ou claim `aal` do JWT.
+- Uma sessao autenticada so-senha (`aal1`) **nao passa o gate**, mesmo que o TOTP esteja cadastrado.
+- **Recuperacao de senha:** o link do Supabase cria sessao `aal1`. O middleware exige `aal2` antes de permitir acesso a qualquer rota protegida. A troca de senha so e efetivada apos MFA challenge, e a troca **revoga todas as outras sessoes** (JWT antigo continua valido ate refresh).
+- Reautenticacao (MFA challenge) exigida em: `PURGE_RECORD`, `EXPORT_DATA`, `END_TREATMENT`, troca de senha.
+- Recomendado: clausula `(auth.jwt()->>'aal') = 'aal2'` nas policies de `clinical_records`, `anamnesis`, `session_note_drafts` — versao fail-closed que sobrevive a bypass de middleware.
 
 ### 7.4 Headers HTTP de seguranca
 
-Configurados no middleware e/ou `next.config.ts`:
-
 ```typescript
-// next.config.ts — headers()
+// next.config.ts
 {
-  'X-Content-Type-Options': 'nosniff',
-  'X-Frame-Options': 'DENY',
-  'Referrer-Policy': 'strict-origin-when-cross-origin',
-  'Permissions-Policy': 'camera=(self), microphone=(self), geolocation=()',
-  'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
-  'X-Robots-Tag': 'noindex',  // Nas areas autenticadas
-  'Content-Security-Policy': [
-    "default-src 'self'",
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval'",  // Next.js exige
-    "style-src 'self' 'unsafe-inline'",  // Tailwind
-    "img-src 'self' data: blob:",
-    `connect-src 'self' https://*.supabase.co wss://*.supabase.co wss://*.livekit.cloud https://api.resend.com`,
-    "media-src 'self' blob:",
-    "worker-src 'self' blob:",
-    "frame-ancestors 'none'",
-  ].join('; '),
+  experimental: {
+    serverActions: {
+      allowedOrigins: ['talitha.dominio.com.br'],  // dominio de producao
+    },
+  },
 }
 ```
 
+Headers (adicionados no middleware e/ou `next.config.ts`):
+- `X-Content-Type-Options: nosniff`
+- `X-Frame-Options: DENY`
+- `Referrer-Policy: strict-origin-when-cross-origin` (global); `no-referrer` em `/confirmar/*` e `/convite/*`
+- `Permissions-Policy: camera=(self), microphone=(self), geolocation=()`
+- `Strict-Transport-Security: max-age=31536000; includeSubDomains`
+- `X-Robots-Tag: noindex` (areas autenticadas)
+- `Cross-Origin-Opener-Policy: same-origin`
+- `X-Permitted-Cross-Domain-Policies: none`
+- CSP com nonce por request (ver AM4 do review)
+- Para rotas que decifram (`/pacientes/[id]`, `/pacientes/[id]/evolucao`, `/api/receipts/*/download`): `Cache-Control: private, no-store, max-age=0, must-revalidate`
+
 ### 7.5 Bootstrap de roles
 
-- **Psicologa:** provisionada por seed/migration. Role em `profiles.role = 'psychologist'` (ou `app_metadata`). **Signup publico desabilitado** para este role. Nao existe auto-cadastro de psicologa.
-- **Paciente:** criado exclusivamente via convite emitido pela psicologa. Server Action `createPatient` cria o user no Supabase Auth com `role = 'patient'` em `app_metadata`. O user nunca edita `app_metadata` via API.
-- **Coluna `profiles.role`:** RLS proibe UPDATE na coluna por qualquer usuario, inclusive o proprio.
+- **Psicologa:** provisionada por seed/migration. `profiles.role = 'psychologist'` e a **fonte canonica**. Espelhado em `app_metadata` por trigger (para caminho rapido do middleware). Signup publico desabilitado.
+- **Paciente:** criado exclusivamente via convite. `profiles.role = 'patient'` definido na criacao.
+- **`profiles.role`:** fonte canonica do role. RLS proibe UPDATE na coluna por qualquer usuario, inclusive o proprio. A RLS **nunca confia apenas no claim do JWT** — troca de role revoga sessoes.
 
 ---
 
@@ -661,386 +401,250 @@ Configurados no middleware e/ou `next.config.ts`:
 
 ### 8.1 Asaas (Pagamentos)
 
-**Client:** Edge Functions `asaas-webhook` + chamadas ao Asaas via `supabase.functions.invoke` a partir de Server Actions.
-
 **Segredos:**
-- `ASAAS_API_KEY` — `supabase secrets` — chamadas `GET/POST /v3/payments`, `/v3/customers`, `/v3/subscriptions`
-- `ASAAS_WEBHOOK_TOKEN` — `supabase secrets` — validacao do header `asaas-access-token`
+- `ASAAS_API_KEY` — `supabase secrets`
+- `ASAAS_WEBHOOK_TOKEN` — `supabase secrets`
+- `ASAAS_BASE_URL` — `supabase secrets` — `https://api-sandbox.asaas.com/v3` em dev, `https://api.asaas.com/v3` em producao
 
-**Fluxo de cobranca:**
-1. Server Action (Next.js) → `supabase.functions.invoke('create-charge', { body })` se uma Edge Function dedicada existir, OU Server Action chama Asaas API diretamente com `ASAAS_API_KEY` injetado via `supabase.rpc()` que encapsula a chamada
-2. Decisao: **Server Action chama Edge Function `create-charge`** que faz o request ao Asaas. Isso mantem a `ASAAS_API_KEY` exclusivamente no dominio Supabase.
-3. Falha do Asaas → toast generico ao usuario ("Nao foi possivel criar a cobranca. Tente novamente em alguns minutos."); detalhe apenas no log server-side. Nunca mensagem literal do Asaas.
-4. Retry: Server Action nao faz retry automatico. O usuario tenta novamente.
+**Edge Function `create-charge` (verify_jwt=true):**
 
-**Webhook (Edge Function `asaas-webhook`):**
-1. Validar `asaas-access-token` com `timingSafeEqual` — **antes de qualquer parsing ou query**. Falha → 401.
-2. Validar tamanho do body <= 64KB.
-3. Validar frescor: rejeitar `dateCreated` > 7 dias com HTTP 200 + log (nao 4xx).
-4. Idempotencia: `INSERT INTO payment_webhook_events ... ON CONFLICT (asaas_event_id) DO NOTHING RETURNING asaas_event_id`. Se nao retornou → 200 sem side-effect.
-5. Re-consultar `GET /v3/payments/{id}` — payload **nao e autoritativo**.
-6. Transacao unica: atualizar `charges`, `sessions.payment_status`, criar `receipt` (via funcao `SECURITY DEFINER`).
-7. Numeracao de recibo: `SELECT ... FOR UPDATE` em `receipt_counters` na mesma transacao.
-8. Maquina de estados monotonica: `paid` so regride para `refunded`/`chargeback`.
-9. HTTP 200. Erro interno → 500 (Asaas faz retry; retry e seguro por idempotencia).
+Pre-condicoes (na ordem, falha → resposta generica):
+1. `Authorization: Bearer <supabase JWT>` → `getUser(jwt)` → `uid`.
+2. Verificar `profiles.role = 'psychologist'` **no banco** (nunca do JWT `user_metadata`).
+3. Body contem **apenas** `charge_id` (uuid, zod). Nunca `patient_id`, `value`, `due_date`.
+4. Carregar o registro `charges` pelo `charge_id` com `status = 'pending_creation'`; verificar que `charges.psychologist_id` corresponde ao `uid`.
+5. Derivar paciente, valor, vencimento **do registro no banco** — nunca do body.
+6. Criar customer no Asaas se necessario; criar cobranca.
+7. Atualizar `charges.status` e `charges.asaas_payment_id`.
+8. Registrar `CREATE_CHARGE` no audit log com ator.
+9. Resposta generica em qualquer falha.
 
-**Descricao de cobranca:** neutra — `Prestacao de servicos profissionais — Ref. MM/AAAA`. Natureza clinica so no recibo.
+**Fluxo de cobranca (corrigido):**
+1. Server Action (`withPsychologist`) valida input, grava `charges` com `status = 'pending_creation'`.
+2. Server Action chama `supabase.functions.invoke('create-charge', { body: { charge_id } })`.
+3. Edge Function lê o registro, chama o Asaas, atualiza o status.
+4. Falha do Asaas → charge permanece `pending_creation`; toast generico ao usuario.
 
-**Ao Asaas:** enviar apenas `name`, `cpfCnpj`, `email`, `mobilePhone`. Nunca dados clinicos.
+**Edge Function `retry-charges` (verify_jwt=false, CRON_SECRET):**
+- Cron a cada 15 min. Carrega charges `pending_creation` com `created_at` > 5 min e < 24h.
+- Tenta criar no Asaas; atualiza status.
+- Apos 3 falhas: notificar psicologa por email.
+
+**Webhook (Edge Function `asaas-webhook`):** (identico a v1.0)
 
 **Quando o Asaas esta fora do ar:**
-- Criar a cobranca localmente com `status = 'pending_creation'`
-- Exibir aviso a psicologa: "Cobranca registrada. O envio ao paciente sera concluido automaticamente."
-- Job de retentativa (Edge Function `retry-charges`, cron) tenta criar no Asaas a cada 15 min, ate 3 tentativas
-- Apos 3 falhas: notificar psicologa por email
+- Cobranca fica com `status = 'pending_creation'` e `retry-charges` tenta automaticamente.
 
 ### 8.2 LiveKit Cloud (Video)
 
-**Client:** Edge Function `issue-livekit-token` + LiveKit React SDK (`@livekit/components-react`) no browser.
+(Identico a v1.0 com a seguinte correcao na sala de espera:)
 
-**Segredos:**
-- `LIVEKIT_API_KEY` — `supabase secrets`
-- `LIVEKIT_API_SECRET` — `supabase secrets`
-- `NEXT_PUBLIC_LIVEKIT_URL` — env publica (wss://...)
+**Sala de espera:** estado no Postgres (`sessions.waiting_since`, `sessions.admitted_at`), **fora do LiveKit**. Nenhum token emitido antes da admissao. **Transicoes de estado por RPC `SECURITY DEFINER`** — nunca UPDATE direto (secao 4.4):
+- `enter_waiting_room(p_session_id)` — escreve **apenas** `waiting_since`; verifica ownership por `auth.uid()`
+- `admit_patient(p_session_id)` — escreve **apenas** `admitted_at`; exige `role = 'psychologist'`
 
-**Emissao de token (Edge Function `issue-livekit-token`):**
-
-Pre-condicoes (na ordem, falha → 404 generico identico):
-1. `Authorization: Bearer <supabase JWT>` → `getUser(jwt)` → `uid`
-2. Body contem apenas `session_id` (uuid, zod). Nunca `roomName`, `patient_id`, `role`.
-3. Carregar sessao com service_role.
-4. Autorizacao: `uid == psychologist_id` OU `uid == patients.user_id`.
-5. Janela temporal: `now()` entre `scheduled_at - 15min` e `scheduled_at + duration + 30min`.
-6. Estado: `status NOT IN ('cancelled','completed','no_show')`.
-7. Gate de compliance (paciente): consentimento CFP + LGPD vigentes nas versoes atuais.
-8. Gate de admissao (paciente): `admitted_at IS NOT NULL`.
-
-Grants:
-- `room`: room_name exato da sessao (128 bits aleatorios, nunca wildcard)
-- `canPublish: true`, `canSubscribe: true`
-- `canPublishData: false` (anotacoes nunca por data channel)
-- `canUpdateOwnMetadata: false`, `roomCreate: false`, `roomAdmin: false`
-- `identity`: `auth.uid()` (nunca PII)
-- `name`: primeiro nome apenas
-- `metadata`: `{"role":"psychologist"}` ou `{"role":"patient"}`
-
-TTL: 15 minutos. Token em memoria no client (estado React). Nunca `localStorage`, URL, cookie.
-
-**Encerramento (Edge Function `delete-livekit-room`):**
-- Chamada server-side ao encerrar sessao: `RoomServiceClient.deleteRoom(room_name)`
-- Job de limpeza: rooms com idade > 2h sao deletados (protege free tier)
-
-**Sala de espera:** estado no Postgres (`sessions.waiting_since`, `sessions.admitted_at`), **fora do LiveKit**. Nenhum token emitido antes da admissao. Paciente faz polling do proprio registro sob RLS. Realtime apenas para a psicologa.
-
-**Reconexao:** LiveKit SDK tem reconnect nativo (< 30s). Apos 30s: UI mostra "Tentar Novamente" → solicita novo token → Edge Function revalida as 8 pre-condicoes.
+Paciente faz polling do proprio registro sob RLS. Realtime apenas para a psicologa.
 
 ### 8.3 Resend (Email Transacional)
 
-**Client:** Resend SDK (`resend`) no Next.js + fetch para Resend API em Edge Functions de cron.
+**Segredos (corrigido — duas chaves distintas):**
+- `RESEND_API_KEY_APP` — EasyPanel env — emails user-initiated (convite, notificacao)
+- `RESEND_API_KEY_CRON` — `supabase secrets` — emails cron-based (lembretes, regua)
+- `EMAIL_FROM` — EasyPanel env + `supabase secrets` — remetente neutro configuravel
 
-**Segredos:**
-- `RESEND_API_KEY` — EasyPanel env (user-initiated emails) + `supabase secrets` (cron-based emails)
+(Restante identico a v1.0: allowlist de assuntos, politica de conteudo, anti-spoofing.)
 
-**Politica de conteudo (Security Review secao 8):**
-
-Remetente: `"Talitha" <nao-responda@notificacoes.{dominio}>` — sem "psicologia", "psi", "terapia".
-
-Allowlist de assuntos (nenhum assunto fora desta lista):
-
-| Gatilho | Assunto aprovado |
-|---------|------------------|
-| Convite de primeiro acesso | `Seu acesso ao portal` |
-| Lembrete 24h | `Lembrete do seu compromisso de amanha` |
-| Lembrete 1h | `Seu compromisso comeca em 1 hora` |
-| Confirmacao de presenca | `Confirmacao do seu compromisso` |
-| Cobranca D-3 | `Aviso de vencimento` |
-| Cobranca D+3 / D+7 | `Pagamento pendente` |
-| Recibo disponivel | `Documento disponivel no seu portal` |
-| Remarcacao/cancelamento | `Alteracao no seu compromisso` |
-| Seguranca | `Atividade na sua conta` |
-
-Regras:
-- Preheader definido explicitamente em todo template (neutro)
-- Corpo pode conter data/hora e valor (requer abrir o email)
-- Nunca conteudo clinico (D1/D2), CPF completo, valores no assunto
-- Nunca link direto a sala de video com token embutido
-- Links de acao em email (confirmar presenca): token >= 128 bits, hash no banco, uso unico, expira no horario da sessao, escopo de uma acao, sem criar sessao autenticada
-- Nome de arquivo de recibo: `recibo-{numero}.pdf` (neutro)
-
-**Anti-spoofing:** SPF + DKIM + DMARC `p=reject` no dominio de envio (pendencia do dev — DNS).
-
-**Cron (Edge Functions):**
-- `send-reminders`: disparado por pg_cron, valida `CRON_SECRET` em header, consulta sessoes das proximas 24h/1h, envia via Resend API, idempotencia por (`session_id`, `reminder_type`)
-- `billing-rules`: disparado diariamente, processa regua de cobranca (D-3, D+3, D+7, D+15), respeita opt-out, verifica status antes de enviar
+**`/confirmar/[token]` — link de acao em email (corrigido):**
+- GET **apenas renderiza** uma tela de confirmacao com informacao minima (data e hora, sem nome do paciente) e um formulario com botao.
+- POST (Server Action publica) efetiva a acao e marca `used_at` na mesma transacao.
+- Tokens **por acao**: um para confirmar, outro para cancelar — nunca um token que aceite `action` como parametro.
+- Cancelamento por token respeita a politica de prazo; fora do prazo → a tela informa e redireciona ao portal.
+- Headers: `Referrer-Policy: no-referrer`, `Cache-Control: no-store`, `X-Robots-Tag: noindex, nofollow`.
 
 ---
 
 ## 9. Modulo de Criptografia
 
-### 9.1 Visao geral (ADR-0001)
+### 9.1 Carregamento de chaves (corrigido)
 
-```
-┌───────────────────────────────────────────────────┐
-│                NEXT.JS SERVER (Node)               │
-│                                                    │
-│  ┌──────────────────────────────────────────────┐  │
-│  │  src/lib/crypto/envelope.ts                  │  │
-│  │                                               │  │
-│  │  encrypt(plaintext, patientId, recordId):     │  │
-│  │    1. gerar DEK (32 bytes aleatorios)         │  │
-│  │    2. cifrar plaintext com DEK (AES-256-GCM)  │  │
-│  │       IV = 12 bytes aleatorios                │  │
-│  │       AAD = patientId + '|' + recordId        │  │
-│  │    3. cifrar DEK com KEK (AES-256-GCM)        │  │
-│  │       IV separado, AAD = 'dek_wrap'           │  │
-│  │    4. retornar {ciphertext, iv, tag,          │  │
-│  │                  dekWrapped, dekIv, dekTag,    │  │
-│  │                  kekVersion}                   │  │
-│  │                                               │  │
-│  │  decrypt(envelope, patientId, recordId):      │  │
-│  │    1. carregar KEK pelo kekVersion             │  │
-│  │    2. decifrar DEK com KEK                    │  │
-│  │    3. decifrar plaintext com DEK              │  │
-│  │       verificar AAD = patientId + '|' + recordId│ │
-│  │    4. retornar plaintext                      │  │
-│  └──────────────────────────────────────────────┘  │
-│                                                    │
-│  KEK carregada de: process.env.RECORD_ENCRYPTION_  │
-│  KEK_V1 (32 bytes base64, injetado pelo EasyPanel) │
-└────────────────────────────────────────────────────┘
+```typescript
+// src/lib/crypto/keys.ts — executado na inicializacao do modulo
+function loadKey(envName: string): Buffer {
+  const raw = process.env[envName]
+  if (!raw) throw new Error(`Missing ${envName} — server cannot start without encryption keys`)
+  const buf = Buffer.from(raw, 'base64')
+  if (buf.length !== 32) throw new Error(`${envName} must be exactly 32 bytes (got ${buf.length})`)
+  delete process.env[envName]  // remover do env apos carregar
+  return buf
+}
+
+export const KEK = loadKey('RECORD_ENCRYPTION_KEK_V1')
+export const CPF_INDEX_KEY = loadKey('CPF_INDEX_KEY')
+
+// Proibido: process.env.RECORD_ENCRYPTION_KEK_V1!
+// Proibido: process.env.CPF_INDEX_KEY!
+// Proibido: Buffer.from(process.env.X as any, 'base64')
 ```
 
-### 9.2 Campos cifrados
+Falha ruidosa no boot se chave ausente, tamanho errado ou base64 invalido. **Nunca `!` em leitura de env de chave.**
+
+### 9.2 Campos cifrados (atualizado)
 
 | Campo | Tabela | AAD |
 |-------|--------|-----|
 | Conteudo da evolucao | `clinical_records` | `patient_id \| record_id` |
 | Campos da anamnese (medicacao, condicoes, contato emergencia) | `anamnesis` | `patient_id \| anamnesis_id` |
 | CPF do paciente | `patients` | `patient_id \| 'cpf'` |
+| **Rascunho de anotacoes da sessao** | `session_note_drafts` | `patient_id \| session_id` |
 
-### 9.3 Blind index para CPF
+**Rascunho de anotacoes:** conteudo clinico — segue o envelope sem excecao. Auto-save por Server Action com `runtime='nodejs'`. RLS so para a psicologa. `DELETE` na transacao que grava a evolucao definitiva. Job de limpeza para rascunhos orfaos (sessoes encerradas ha mais de 7 dias).
+
+### 9.3 Blind index para CPF (corrigido)
 
 ```typescript
 // src/lib/crypto/blind-index.ts
 import { createHmac } from 'node:crypto'
+import { CPF_INDEX_KEY } from './keys'  // validado no boot, nunca process.env
 
 export function computeCpfBlindIndex(cpf: string): string {
-  const key = Buffer.from(process.env.CPF_INDEX_KEY!, 'base64')
-  return createHmac('sha256', key).update(cpf).digest('hex')
+  return createHmac('sha256', CPF_INDEX_KEY).update(cpf).digest('hex')
 }
 ```
 
-- Coluna `patients.cpf_hmac` com `UNIQUE` constraint
-- Permite verificar duplicidade sem decifrar
-- **Nunca SHA-256 puro** — espaco de 10^11 e brute-forcavel
-
-### 9.4 Busca no historico (decrypt-then-filter)
-
-Busca textual no historico de evolucoes (US-403):
-1. Server Action carrega todas as evolucoes do paciente (paginadas, ex: 20 por pagina)
-2. Decifra cada uma server-side
-3. Filtra pelo termo de busca em memoria
-4. Retorna apenas os resultados (plaintext nunca sai do server como response — apenas o resultado formatado)
-5. Volume real: 20-30 pacientes, ~50 sessoes/ano/paciente = ~1500 registros totais. Decrypt de 20 registros por pagina e sub-segundo.
-
-### 9.5 Rotacao de KEK
-
-1. Criar nova env `RECORD_ENCRYPTION_KEK_V2` no EasyPanel
-2. Job (Server Action administrativa) re-wrapa cada DEK com a nova KEK, incrementa `kek_version`
-3. Manter V1 disponivel ate 0 registros em V1
-4. Remover V1 do EasyPanel
-
-### 9.6 Crypto-shredding (eliminacao apos retencao)
-
-Para eliminar um registro de forma eficaz apos `retention_until`:
-1. Apagar o `dek_wrapped` da linha → ciphertext torna-se irrecuperavel
-2. Apagar o `content_ciphertext` por boa pratica
-3. Registrar `PURGE_RECORD` no audit log com reautenticacao MFA
-4. Unico metodo honesto de eliminacao num Postgres com PITR/backup
+### 9.4–9.6 (Inalterados da v1.0)
 
 ---
 
 ## 10. Audit Log
 
-### 10.1 Camadas (ADR-0004)
+### 10.1 Camadas (identicas a v1.0)
 
-| Camada | Protege contra | Mecanismo |
-|--------|---------------|-----------|
-| 1. RLS + `FORCE ROW LEVEL SECURITY` | Cliente autenticado | Policies: SELECT so para psychologist; nenhuma policy de INSERT/UPDATE/DELETE |
-| 2. Triggers de bloqueio | `service_role`, aplicacao com bug | `BEFORE UPDATE OR DELETE FOR EACH ROW` + `BEFORE TRUNCATE FOR EACH STATEMENT` → `RAISE EXCEPTION` |
-| 3. `REVOKE` explicito | Grants excessivos | `REVOKE UPDATE, DELETE, TRUNCATE ON audit_log FROM authenticated, anon, service_role` |
-| 4. Hash chain | Superuser, insider do provedor | `prev_hash` + `row_hash` calculados no trigger `BEFORE INSERT`; ancora externa semanal |
+Camada 4 (hash chain) — **ancora externa:** Edge Function `anchor-audit-log` (cron semanal, `CRON_SECRET`) exporta ultimo `row_hash` + contagem + timestamp para fora do banco (email a psicologa e/ou objeto em bucket privado versionado). Funcao de verificacao recalcula a cadeia entre duas ancoras.
 
-### 10.2 Escrita
+### 10.2 Escrita (corrigido — duas funcoes)
 
-Funcao unica `SECURITY DEFINER` (`log_audit`):
-- `actor_id` derivado de `auth.uid()` — nunca de parametro
-- Parametros: `p_patient_id`, `p_action`, `p_target_id`, `p_ip`, `p_user_agent`, `p_metadata`
-- `metadata jsonb` com allowlist de chaves; **proibido D1/D2/D5**
+**`log_audit`** — contexto de usuario autenticado:
+- `actor_id := auth.uid()` — RAISE se NULL
+- Chamada com JWT do usuario via client RLS
 
-### 10.3 Sincrono vs assincrono
+**`log_audit_system`** — contexto service_role/Edge Function:
+- Recebe `p_actor_id uuid` (extraido pela Edge Function do JWT validado por `getUser(jwt)`) e `p_actor_source text`
+- `actor_source` enum: `'user'`, `'edge_function'`, `'webhook'`, `'cron'`, `'anonymous'`
+- Executavel **apenas** por `service_role` (`REVOKE` de `authenticated`/`anon`)
+- `actor_id` nullable apenas quando `actor_source = 'anonymous'` (login falhado com email inexistente, webhook rejeitado)
 
-| Operacao | Log | Falha bloqueia? |
-|----------|-----|-----------------|
-| `VIEW_RECORD`, `VIEW_ANAMNESIS`, `VIEW_AUDIT_LOG` | Assincrono (retry) | Nao |
-| `CREATE_RECORD`, `UPDATE_RECORD`, `PURGE_RECORD` | **Mesma transacao** | **Sim** |
-| `ISSUE_ROOM_TOKEN`, `DENY_ROOM_TOKEN` | **Mesma transacao** | **Sim** |
-| `ACCEPT_CONSENT`, `REVOKE_CONSENT` | **Mesma transacao** | **Sim** |
-| `LOGIN_SUCCESS`, `LOGIN_FAILURE`, `MFA_CHALLENGE_FAILURE` | Assincrono | Nao |
-| Demais acoes administrativas | Sincrono | Sim |
+Coluna `actor_source NOT NULL` em `audit_log`.
+
+**IP e User-Agent:** derivados sempre de `headers()` no server / `req.headers` na Edge Function. Nunca do body. Regra de confianca do proxy: usar o ultimo hop confiavel de `x-forwarded-for`.
+
+### 10.3 Sincrono vs assincrono (corrigido)
+
+O caminho assincrono usa tabela de outbox (`audit_log_pending`) drenada por cron — **nunca** fire-and-forget em Server Action (perde o registro).
+
+Alternativa aceita: tornar `VIEW_RECORD` sincrono (custo ~5ms, volume irrelevante neste produto).
 
 ### 10.4 Acoes registradas
 
-`VIEW_RECORD`, `CREATE_RECORD`, `UPDATE_RECORD`, `VIEW_ANAMNESIS`, `VIEW_AUDIT_LOG`, `ISSUE_ROOM_TOKEN`, `DENY_ROOM_TOKEN` (com motivo), `LOGIN_SUCCESS`, `LOGIN_FAILURE`, `MFA_CHALLENGE_FAILURE`, `ACCEPT_CONSENT`, `REVOKE_CONSENT`, `END_TREATMENT`, `PURGE_RECORD`, `EXPORT_DATA`, `LGPD_REQUEST`, `CANCEL_SESSION`, `RESCHEDULE_SESSION`, `CONFIRM_ATTENDANCE`, `CANCEL_CHARGE`, `CREATE_CHARGE`, `CREATE_SUBSCRIPTION`, `WEBHOOK_REJECTED`, `INVITE_SENT`, `INVITE_REDEEMED`, `REMINDER_SENT`, `SESSION_STARTED`, `SESSION_ENDED`.
+(Identicas a v1.0, com adicao de: `SEARCH_RECORDS` (patient_id + contagem, **nunca o termo de busca** — o termo e conteudo clinico).)
 
 ---
 
 ## 11. Tratamento de Erros e Observabilidade
 
-### 11.1 Error boundaries
+### 11.1–11.3 (Inalterados da v1.0)
 
-- `src/app/error.tsx` — error boundary global (client component)
-- Layouts de route group podem ter seu proprio `error.tsx` se necessario
-- `src/app/not-found.tsx` — 404
+### 11.4 Modulo de log
 
-### 11.2 Padrao de try/catch em Server Actions
+Modulo unico `src/lib/logger.ts` (+ equivalente Deno para Edge Functions) com **allowlist de chaves serializaveis**: `event_type`, `session_id`, `patient_id`, `action`, `status`, `error_code`, `user_id`, `payment_id`.
 
-```typescript
-try {
-  // operacao
-} catch (error) {
-  // Log server-side com detalhes (SEM conteudo clinico, CPF, tokens)
-  console.error(`[ACTION] createPatient failed: ${error instanceof Error ? error.message : 'unknown'}`)
-  // Retorno generico ao client
-  return { error: 'Nao foi possivel completar a operacao. Tente novamente.' }
-}
-```
+Gate de code review: `console.(log|error|warn|info)` fora de `logger.ts` = reprovacao.
 
-### 11.3 Toast (sonner)
+Proibido logar objeto de erro inteiro (`PostgrestError`, resposta do Asaas, payload de webhook).
 
-- Sucesso: `toast.success('Paciente cadastrado com sucesso')`
-- Erro: `toast.error('Nao foi possivel cadastrar o paciente. Tente novamente.')`
-- Nunca mensagem tecnica, stack trace ou erro de terceiro ao usuario
+### 11.5 Login/reset — mensagens genericas
 
-### 11.4 O que NUNCA pode ser logado
-
-| Proibido em logs | Razao |
-|------------------|-------|
-| Conteudo clinico (evolucao, anamnese) | D1/D2 — dado sensivel LGPD |
-| CPF (completo ou parcial com 6+ digitos) | D5 — dado confidencial |
-| Payload completo do webhook Asaas | Contem CPF, nome, valor |
-| Token LiveKit | Credencial de midia |
-| `SUPABASE_SERVICE_ROLE_KEY` | Chave mestra |
-| KEK, CPF_INDEX_KEY | Chaves de criptografia |
-| `ASAAS_API_KEY`, `ASAAS_WEBHOOK_TOKEN` | Segredos de integracao |
-| Senha, refresh token, cookie de sessao | Credenciais |
-
-**O que pode ser logado:** `event_type`, `payment_id`, `status`, `session_id`, `patient_id` (UUID, nao PII), `user_id`, `action`, `error.message` (generico).
-
-### 11.5 Producao
-
-- `productionBrowserSourceMaps: false` no `next.config.ts`
-- Stack traces suprimidos em respostas ao client
-- Logs estruturados com `console.error` (EasyPanel captura stdout/stderr)
+Nao revelar existencia de conta em telas publicas (login, reset, convite expirado). Mensagem sempre generica: "Se este email estiver cadastrado, voce recebera as instrucoes."
 
 ---
 
 ## 12. Variaveis de Ambiente
 
-### 12.1 Tabela completa
+### 12.1 Tabela completa (corrigida)
 
-| Variavel | Onde vive | Segredo? | `.env.example` | Descricao |
-|----------|----------|----------|-----------------|-----------|
-| `NEXT_PUBLIC_SUPABASE_URL` | EasyPanel / `.env` | Nao | Sim (placeholder) | URL do projeto Supabase |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | EasyPanel / `.env` | Nao | Sim (placeholder) | Chave anon (RLS protege) |
-| `NEXT_PUBLIC_LIVEKIT_URL` | EasyPanel / `.env` | Nao | Sim (placeholder) | URL WebSocket do LiveKit Cloud |
-| `NEXT_PUBLIC_SITE_URL` | EasyPanel / `.env` | Nao | Sim (`http://localhost:3000`) | URL do app (redirects, links em email) |
-| `SUPABASE_SERVICE_ROLE_KEY` | **EasyPanel** | **Sim** | Nao | Operacoes server-side bypassing RLS |
-| `RECORD_ENCRYPTION_KEK_V1` | **EasyPanel** | **Sim** | Nao | 32 bytes base64 — KEK de prontuario |
-| `CPF_INDEX_KEY` | **EasyPanel** | **Sim** | Nao | Chave HMAC para blind index de CPF |
-| `RESEND_API_KEY` | **EasyPanel** + `supabase secrets` | **Sim** | Nao | API key do Resend |
-| `CRON_SECRET` | **EasyPanel** + `supabase secrets` | **Sim** | Nao | Autenticacao de cron jobs |
-| `ASAAS_API_KEY` | `supabase secrets` | **Sim** | Nao | API key do Asaas |
-| `ASAAS_WEBHOOK_TOKEN` | `supabase secrets` | **Sim** | Nao | Token de validacao do webhook |
-| `LIVEKIT_API_KEY` | `supabase secrets` | **Sim** | Nao | API key do LiveKit |
-| `LIVEKIT_API_SECRET` | `supabase secrets` | **Sim** | Nao | Secret do LiveKit |
+| Variavel | Onde vive | Segredo? | Quem le | `.env.example` |
+|----------|----------|----------|---------|-----------------|
+| `NEXT_PUBLIC_SUPABASE_URL` | EasyPanel (ARG no builder) | Nao | Browser + server | Sim (placeholder) |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | EasyPanel (ARG no builder) | Nao | Browser + server | Sim (placeholder) |
+| `NEXT_PUBLIC_LIVEKIT_URL` | EasyPanel (ARG no builder) | Nao | Browser (LiveKit SDK) | Sim (placeholder) |
+| `NEXT_PUBLIC_SITE_URL` | EasyPanel (ARG no builder) | Nao | Server (links em email) | Sim (`http://localhost:3000`) |
+| `SUPABASE_SERVICE_ROLE_KEY` | **EasyPanel** (runtime only) | **Sim** | `admin.ts` (allowlist) | Nao |
+| `RECORD_ENCRYPTION_KEK_V1` | **EasyPanel** (runtime only) | **Sim** | `keys.ts` | Nao |
+| `CPF_INDEX_KEY` | **EasyPanel** (runtime only) | **Sim** | `keys.ts` | Nao |
+| `RESEND_API_KEY_APP` | **EasyPanel** (runtime only) | **Sim** | `email/client.ts` | Nao |
+| `EMAIL_FROM` | **EasyPanel** + `supabase secrets` | Nao | `email/send.ts`, Edge Functions | Sim (placeholder) |
+| `ASAAS_API_KEY` | `supabase secrets` | **Sim** | Edge Functions Asaas | Nao |
+| `ASAAS_WEBHOOK_TOKEN` | `supabase secrets` | **Sim** | `asaas-webhook` | Nao |
+| `ASAAS_BASE_URL` | `supabase secrets` | Nao | Edge Functions Asaas | Sim (sandbox URL) |
+| `LIVEKIT_API_KEY` | `supabase secrets` | **Sim** | `issue-livekit-token`, `delete-livekit-room` | Nao |
+| `LIVEKIT_API_SECRET` | `supabase secrets` | **Sim** | `issue-livekit-token`, `delete-livekit-room` | Nao |
+| `LIVEKIT_URL` | `supabase secrets` | Nao | `delete-livekit-room` (API call) | Nao |
+| `SITE_URL` | `supabase secrets` | Nao | Edge Functions de cron (links do portal) | Nao |
+| `RESEND_API_KEY_CRON` | `supabase secrets` | **Sim** | Edge Functions de cron | Nao |
+| `CRON_SECRET` | `supabase secrets` (via Vault) | **Sim** | Edge Functions de cron | Nao |
 
-### 12.2 Regras
+### 12.2 Regras (atualizadas)
 
-1. **Nenhum segredo com prefixo `NEXT_PUBLIC_`.** Allowlist: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_LIVEKIT_URL`, `NEXT_PUBLIC_SITE_URL`.
-2. Gate de code review: `grep -rE 'NEXT_PUBLIC_[A-Z_]*(SECRET|SERVICE_ROLE|API_KEY|TOKEN|PASSWORD|KEK)'` deve retornar 0.
-3. `.env`, `.env.local`, `.env.production` no `.gitignore`.
-4. `.env.example` versionado com placeholders (ex: `NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co`).
-5. **Separacao intencional:** KEK e CPF_INDEX_KEY **exclusivamente** no EasyPanel. Nunca em `supabase secrets`. Segredos de integracao (Asaas, LiveKit) **exclusivamente** em `supabase secrets`. Nunca no EasyPanel (exceto RESEND_API_KEY e CRON_SECRET que precisam estar em ambos).
+1–4: (inalteradas da v1.0)
+5. **Separacao intencional:** KEK e CPF_INDEX_KEY exclusivamente no EasyPanel. Segredos de integracao (Asaas, LiveKit) exclusivamente em `supabase secrets`. `CRON_SECRET` **apenas** em `supabase secrets` via Vault (o job pg_cron le de `vault.decrypted_secrets`; nao fica em claro na definicao do job).
+6. **Nenhum segredo como `ARG` ou `ENV` em nenhum stage do Dockerfile.** Segredos so como env de runtime injetada pelo EasyPanel no container em execucao. Gate: `docker history --no-trunc <imagem> | grep -E 'SERVICE_ROLE|KEK|CPF_INDEX|API_KEY|SECRET'` → 0 linhas.
 
 ---
 
 ## 13. Estrategia de Testes
 
-### 13.1 Estrutura
+### 13.1–13.2 (Inalterados da v1.0)
 
-```
-src/
-├── __tests__/                    # Testes unitarios e de integracao
-│   ├── lib/
-│   │   ├── crypto/
-│   │   │   ├── envelope.test.ts  # Encrypt/decrypt, AAD, rotacao
-│   │   │   └── blind-index.test.ts
-│   │   ├── permissions.test.ts
-│   │   └── email/
-│   │       └── templates.test.ts # Allowlist de assuntos
-│   └── schemas/
-│       ├── patient.test.ts       # Validacao idade >= 18, CPF
-│       └── charge.test.ts        # Valor > 0, vencimento >= hoje
-├── e2e/                          # Testes E2E (Playwright)
-│   ├── auth.spec.ts
-│   ├── patient-crud.spec.ts
-│   ├── video-isolation.spec.ts   # Gate 5.5 (a)-(g)
-│   └── ...
-```
+Adicao em `src/__tests__/lib/crypto/keys.test.ts`: chave ausente → throw; chave curta → throw; vetor conhecido de HMAC → valor esperado.
 
-### 13.2 Ferramentas
+### 13.3 Teste de isolamento da sala (Gate 5.5)
 
-| Ferramenta | Uso |
-|-----------|-----|
-| Vitest | Testes unitarios: schemas zod, modulo crypto, permissoes, templates de email |
-| Playwright | Testes E2E: fluxos completos, isolamento de sala, RBAC |
+(Identico a v1.0 com adicao:)
 
-### 13.3 Teste de isolamento da sala (Gate 5.5 — bloqueante da sprint de video)
-
-Com dois pacientes e duas sessoes no mesmo horario, Playwright executa:
-- (a) Trocar `session_id` no request de token → deve falhar com 404
-- (b) Apresentar token de A ao room de B → LiveKit rejeita
-- (c) Assinar canal Realtime de B → retorna vazio (RLS)
-- (d) GET da sessao de B por id → retorna vazio (RLS)
-- (e) Pedir token antes da admissao (`admitted_at IS NULL`) → deve falhar
-- (f) Pedir token 3h antes do horario → deve falhar
-- (g) Pedir token com consentimento revogado → deve falhar
-
-Todas devem falhar, e (a)/(b) devem gerar `DENY_ROOM_TOKEN` no audit log. Resultado documentado em `docs/talitha-qa-*.md`.
+**Ambiente:** projeto Supabase dedicado a teste; script de seeding com `service_role` (test-only); geracao de TOTP no Playwright a partir do secret semeado; chave LiveKit de dev; `docs/credentials.md` no `.gitignore`.
 
 ---
 
 ## 14. Build e Deploy no EasyPanel
 
-### 14.1 Dockerfile (multi-stage)
+### 14.1 Dockerfile (corrigido)
 
 ```dockerfile
 # Stage 1: Dependencies
 FROM node:20-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci  # Nunca npm install — lockfile poisoning
+RUN npm ci --ignore-scripts
+# Allowlist manual de pacotes que precisam de postinstall:
+# (nenhum identificado ate o momento — acrescentar conforme necessario)
 
 # Stage 2: Build
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# APENAS NEXT_PUBLIC_* como ARG — NENHUM segredo
+ARG NEXT_PUBLIC_SUPABASE_URL
+ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
+ARG NEXT_PUBLIC_LIVEKIT_URL
+ARG NEXT_PUBLIC_SITE_URL
+ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
+ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
+ENV NEXT_PUBLIC_LIVEKIT_URL=$NEXT_PUBLIC_LIVEKIT_URL
+ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
-# Stage 3: Run
+# Stage 3: Run — segredos APENAS como env de runtime (EasyPanel injeta)
 FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
@@ -1057,44 +661,48 @@ ENV HOSTNAME="0.0.0.0"
 CMD ["node", "server.js"]
 ```
 
-### 14.2 next.config.ts
+### 14.2 next.config.ts (atualizado)
 
 ```typescript
 const nextConfig = {
   output: 'standalone',
   productionBrowserSourceMaps: false,
-  // headers de seguranca — ver secao 7.4
-  // ...
+  experimental: {
+    serverActions: {
+      allowedOrigins: [process.env.NEXT_PUBLIC_SITE_URL?.replace(/^https?:\/\//, '') || 'localhost:3000'],
+    },
+  },
 }
 ```
 
-### 14.3 Checklist de deploy
+### 14.3 Checklist de deploy (completo)
 
 - [ ] `output: 'standalone'` no `next.config.ts`
 - [ ] `package-lock.json` versionado
-- [ ] `npm ci` no Dockerfile (nao `npm install`)
-- [ ] Todas as env vars configuradas no EasyPanel (tabela da secao 12)
+- [ ] `npm ci --ignore-scripts` no Dockerfile
+- [ ] `NEXT_PUBLIC_*` como `ARG` no builder; **nenhum segredo como `ARG`/`ENV`**
+- [ ] `docker history --no-trunc <imagem> | grep -E 'SERVICE_ROLE|KEK|CPF_INDEX|API_KEY|SECRET'` → 0 linhas
+- [ ] Todas as env vars de runtime configuradas no EasyPanel (tabela da secao 12)
+- [ ] As 3 chaves de criptografia verificadas: `KEK_V1` (32 bytes base64), `CPF_INDEX_KEY` (32 bytes base64), `RESEND_API_KEY_APP`
 - [ ] `productionBrowserSourceMaps: false`
-- [ ] `robots.txt` bloqueando areas autenticadas
+- [ ] `robots.txt` bloqueando todas as areas autenticadas
 - [ ] CORS das Edge Functions restrito ao dominio de producao
 - [ ] SPF + DKIM + DMARC `p=reject` no dominio de envio
 - [ ] Supabase project em `sa-east-1` (Sao Paulo)
+- [ ] Site URL e Redirect URLs configuradas no Dashboard do Supabase (restritas ao dominio de producao)
+- [ ] `npm audit --audit-level=high` executado sem vulnerabilidades
+- [ ] `allowedOrigins` no `next.config.ts` com o dominio de producao
+- [ ] Custodia da KEK: 2 copias offline em locais distintos + **teste de restauracao executado e documentado**
+- [ ] Plano de resposta a incidente (art. 48): documento operacional de uma pagina
+- [ ] 2FA obrigatorio na conta EasyPanel; contas nomeadas sem login compartilhado
+- [ ] Proxy do EasyPanel nao cacheia `/api/**` nem rotas autenticadas
+- [ ] Versao do Next.js >= versao minima fixada (CVE-2025-29927)
 
 ---
 
 ## 15. Decisoes de Arquitetura
 
-Resumo — detalhes completos nos ADRs em `docs/adr/`.
-
-| Decisao | ADR | Razao |
-|---------|-----|-------|
-| Criptografia envelope AES-256-GCM com KEK fora do Supabase | ADR-0001 | Separacao de dominio de confianca; vazamento de SERVICE_ROLE_KEY nao expoe prontuario |
-| Sala de espera no Postgres, fora do LiveKit | ADR-0002 | Nenhuma credencial de midia antes da admissao; nao consome minutos do free tier |
-| Webhook Asaas em Edge Function do Supabase | ADR-0003 | Segredos de pagamento no dominio Supabase; verify_jwt=false nativo; isolamento |
-| Audit log com 4 camadas cumulativas | ADR-0004 | RLS nao protege contra service_role; cada camada cobre uma classe de ataque |
-| Numeracao de recibo com contador transacional | ADR-0005 | Sequence do Postgres gera lacunas em rollback; US-406 exige sequencia sem lacunas |
-| Server Components por padrao, Client Components explicitamente | ADR-0006 | Dados sensiveis renderizados no server; client so para interatividade |
-| Server Actions para mutations, Edge Functions para integracoes | ADR-0006 | Mutations usam KEK (Next.js); integracoes usam secrets de terceiros (Supabase) |
+(Identico a v1.0 — detalhes nos ADRs em `docs/adr/`.)
 
 ---
 
@@ -1102,56 +710,104 @@ Resumo — detalhes completos nos ADRs em `docs/adr/`.
 
 ### Regras de codigo
 
-1. `runtime='nodejs'` obrigatorio em toda rota/action que usa `node:crypto` (prontuario, anamnese, recibo PDF)
-2. **Nenhuma** funcao server aceita `patient_id`, `psychologist_id` ou `role` como parametro — sempre `getUser()` → derivar
+1. `runtime='nodejs'` obrigatorio em toda rota/action que usa `node:crypto`
+2. **Nenhuma** funcao server aceita `patient_id`, `psychologist_id` ou `role` como parametro
 3. `getUser()` em todo codigo server-side — **nunca** `getSession()`
-4. Validacao zod em toda boundary server (Server Action, Route Handler, Edge Function) — client-side e pre-validacao de UX, nunca unica camada
+4. Validacao zod em toda boundary server
 5. Um componente por arquivo; acima de 300 linhas, extrair
 6. Proibido `dangerouslySetInnerHTML` em qualquer campo de prontuario/anamnese
-7. Proibido `any` — tipar tudo; generics para tipos dinamicos
-8. Tipos inferidos de schemas zod (`z.infer<typeof schema>`) — nunca duplicar
+7. Proibido `any`
+8. Tipos inferidos de schemas zod — nunca duplicar
 
 ### Regras de seguranca
 
-9. KEK exclusivamente no EasyPanel — mover para `supabase secrets` e motivo de reprovacao em code review
-10. Nenhum segredo com prefixo `NEXT_PUBLIC_` fora da allowlist (secao 12.2)
-11. Ciphertext de prontuario nunca sai do servidor — client recebe apenas plaintext renderizado em Server Component
-12. Conteudo clinico, CPF, tokens e payloads de webhook nunca em log
-13. Erro de terceiro (Asaas, Resend) nunca literal ao client — mensagem generica + log server-side
-14. Token LiveKit apenas em memoria (estado React) — nunca localStorage, sessionStorage, URL, cookie
+9. KEK exclusivamente no EasyPanel — mover para `supabase secrets` e reprovacao em code review
+10. Nenhum segredo com prefixo `NEXT_PUBLIC_` fora da allowlist
+11. Ciphertext de prontuario nunca sai do servidor
+12. Conteudo clinico, CPF, tokens e payloads de webhook nunca em log (via `logger.ts`)
+13. Erro de terceiro nunca literal ao client
+14. Token LiveKit apenas em memoria (estado React)
 15. Links de acao em email: token opaco no path, nunca dados em query string
+16. **Proibido `localStorage`/`sessionStorage`/IndexedDB para qualquer campo clinico** (inclui rascunho de anotacoes)
+17. **Plaintext clinico nunca entra em cache do Next.js** — `force-dynamic` + `no-store` em toda rota que decifra
+18. **`select('*')` proibido** em tabelas com campos cifrados — sempre lista explicita de colunas
+19. **Nenhum segredo como `ARG`/`ENV` em nenhum stage do Dockerfile**
 
-### Regras de RBAC
+### Regras de autorizacao
 
-16. Role em `app_metadata` ou `profiles.role` com RLS que proibe UPDATE pelo usuario
-17. Signup publico desabilitado; psicologa por seed/migration; paciente por convite
-18. UI esconde, servidor protege — um usuario que bypassa a UI deve receber erro de permissao
-19. PKs de entidades expostas em URL sao UUID (`gen_random_uuid()`); proibido `bigserial`/`identity`
-20. Toda tabela em `public` com `ENABLE ROW LEVEL SECURITY` + ao menos uma policy; migration sem RLS = reprovacao
+20. **Middleware e guard de layout NAO sao a fronteira de autorizacao** — Server Actions e a fronteira
+21. **Toda Server Action exportada usa wrapper** (`withPsychologist`/`withPatient`/`withPublicAction`); gate: `grep -L "withPsychologist\|withPatient\|withPublicAction" src/lib/actions/*.ts` retorna vazio
+22. **MFA e `aal2`, nao enrollment** — sessao so-senha nao passa o gate
+23. **`profiles.role` e a fonte canonica do role** — espelhado em `app_metadata` por trigger; RLS nunca confia apenas no claim do JWT
+24. **RLS nao e column-level** — transicoes de estado sensiveis sempre por RPC `SECURITY DEFINER`
+25. **`service_role` apenas na allowlist** (secao 6.2); importacao de `admin.ts` fora da allowlist = reprovacao
+26. Signup publico desabilitado; psicologa por seed/migration; paciente por convite
+27. UI esconde, servidor protege
+28. PKs UUID em toda tabela exposta em URL; proibido `bigserial`/`identity`
+29. Toda tabela com RLS + ao menos uma policy; migration sem RLS = reprovacao
 
 ---
 
 ## 17. O que o Data Architect deve absorver
 
-Lista de requisitos estruturais que este documento impoe ao schema:
+Requisitos estruturais impostos ao schema. Cada item e verificavel e nao deve ser omitido.
 
-1. **Criptografia envelope** — colunas `content_ciphertext`, `content_iv`, `content_tag`, `dek_wrapped`, `dek_iv`, `dek_tag`, `kek_version` em `clinical_records` e `anamnesis`
-2. **CPF cifrado + blind index** — `cpf_ciphertext`, `cpf_iv`, `cpf_tag`, `cpf_dek_wrapped`, `cpf_dek_iv`, `cpf_dek_tag`, `cpf_hmac` (UNIQUE) em `patients`
-3. **Audit log 4 camadas** — RLS + FORCE, triggers de UPDATE/DELETE/TRUNCATE, REVOKE, hash chain com `prev_hash`/`row_hash`
-4. **Funcao SECURITY DEFINER `log_audit`** — actor_id de `auth.uid()`, nunca parametro
-5. **`sessions.room_name`** — `text UNIQUE NOT NULL DEFAULT ('s_' || encode(gen_random_bytes(16),'hex'))`, um por sessao, nunca reutilizado
-6. **`sessions.waiting_since`, `sessions.admitted_at`** — estados da sala de espera
-7. **`payment_webhook_events`** — tabela de idempotencia com `asaas_event_id` PK
+### Requisitos 1–17 (originais, com correcoes)
+
+1. **Criptografia envelope** — colunas `content_ciphertext`, `content_iv`, `content_tag`, `dek_wrapped`, `dek_iv`, `dek_tag`, `kek_version` em `clinical_records`, `anamnesis` **e `session_note_drafts`**
+2. **CPF cifrado + blind index** — `cpf_ciphertext`, `cpf_iv`, `cpf_tag`, `cpf_dek_wrapped`, `cpf_dek_iv`, `cpf_dek_tag`, `cpf_hmac` (UNIQUE) em `patients`. Colunas de ciphertext/DEK/HMAC: `REVOKE SELECT` para `authenticated` (ou expor views sem elas)
+3. **Audit log 4 camadas** — RLS + FORCE, triggers de UPDATE/DELETE/TRUNCATE, REVOKE, hash chain com `prev_hash`/`row_hash` e **serializacao por `pg_advisory_xact_lock`** antes de ler o hash anterior
+4. **Duas funcoes de audit log** — `log_audit` (contexto usuario, `actor_id := auth.uid()`, RAISE se NULL) e `log_audit_system` (contexto service_role, recebe `p_actor_id` e `p_actor_source` enum, executavel **apenas** por `service_role`). Coluna `actor_source NOT NULL` em `audit_log`; `actor_id` nullable apenas quando `actor_source = 'anonymous'`
+5. **`sessions.room_name`** — `text UNIQUE NOT NULL DEFAULT ('s_' || encode(gen_random_bytes(16),'hex'))`, um por sessao, nunca reutilizado. **Trigger que regenera `room_name` e zera `waiting_since`/`admitted_at` quando `scheduled_at` muda** (remarcacao)
+6. **`sessions.waiting_since`, `sessions.admitted_at`** — paciente e psicologa **nao recebem UPDATE** na tabela. `REVOKE UPDATE ON sessions FROM authenticated, anon`. Transicoes por RPC `SECURITY DEFINER`: `enter_waiting_room(p_session_id)` (escreve so `waiting_since`, valida ownership e janela) e `admit_patient(p_session_id)` (escreve so `admitted_at`, exige role psychologist). Mesmo padrao para cancelamento/remarcacao
+7. **`payment_webhook_events`** — `asaas_event_id` PK. **Sem payload bruto** — colunas de allowlist apenas: `event_type`, `payment_id`, `status`, `value`, `due_date`, `received_at`, `processed_at`, `result`. CPF e nome completo **proibidos**
 8. **`receipt_counters`** — contador transacional por ano com `SELECT ... FOR UPDATE`
 9. **`receipts`** — `UNIQUE (charge_id)`, um recibo por cobranca
 10. **Maquina de estados de pagamento** — monotonica, sem regressao indevida
-11. **`consents`** — append-only, `subject_type`, `consent_text_hash`, `purpose` (enum por finalidade), `ip`, `user_agent`
+11. **`consents`** — append-only; `purpose` enum por finalidade; `consent_text_hash`; `ip` (inet); `user_agent`; **todos os timestamps `timestamptz` UTC** (valor probatorio). **Sem `subject_type = 'guardian'`** (removido pela Emenda E1). Incluir coluna/tabela de **preferencia de comunicacao** (opt-out por canal/finalidade)
 12. **`clinical_record_versions`** — tabela append-only para versionamento de evolucoes
-13. **`profiles.role`** — RLS proibindo UPDATE na coluna
-14. **`retention_until`** — calculado por trigger (5 anos), DELETE fisico bloqueado durante retencao
+13. **`profiles`** — `user_id` (FK auth.users), `role` (**fonte canonica**), `onboarding_completed`, `full_name`, `crp`, dados profissionais. Trigger espelha `role` em `app_metadata`. RLS proibe UPDATE da coluna `role` por qualquer usuario, inclusive o proprio. Policies clinicas incluem clausula `(auth.jwt()->>'aal') = 'aal2'`
+14. **`retention_until`** — retenção fixa em 5 anos (Emenda E1); **nao modelar `is_minor_at_start` nem regra de 20 anos**. DELETE fisico bloqueado por trigger durante a retencao. Todos os campos com valor probatorio em `timestamptz` UTC
 15. **PKs UUID** em toda tabela exposta em URL; proibido `bigserial`/`identity`
 16. **RLS obrigatoria** em toda tabela; `rowsecurity = false` = 0 linhas na query de verificacao
-17. **Supabase region `sa-east-1`** (Sao Paulo) — transferencia internacional minimizada
+17. **Supabase region `sa-east-1`** (Sao Paulo)
+
+### Requisitos adicionais (18–32)
+
+18. **`CHECK` de idade no banco:** `patients` com constraint que rejeita `date_of_birth` correspondente a menos de 18 anos na data de cadastro. Unico enforcement de E1 que sobrevive a RPC, seed e correcao manual
+19. **Tabela `email_action_tokens`** — `id uuid PK`, `token_hash text UNIQUE NOT NULL`, `purpose enum('invite','confirm_attendance','cancel_attendance')`, `patient_id uuid`, `session_id uuid`, `expires_at timestamptz NOT NULL`, `used_at timestamptz`, `created_ip inet`, `created_at timestamptz`. Token **nunca** em claro; `used_at` marcado na mesma transacao da acao; um token por acao; TTL 72h para convite, horario da sessao para confirmacao. RLS sem nenhuma policy para `authenticated`/`anon` — acesso so por RPC `SECURITY DEFINER`
+20. **Eliminacao seletiva por categoria** — cada categoria de dado marcada como retida por obrigacao regulatoria vs. eliminavel (secao 9 do Security Review do PRD). Telefone, preferencias de comunicacao e contato de emergencia sao eliminaveis/anonimizaveis sem tocar no prontuario; prontuario e identificacao minima sao congelaveis ate `retention_until`
+21. **Tabela `data_subject_requests`** — `id uuid`, `patient_id`, `type enum('access','deletion','correction','portability')`, `requested_at`, `due_at` (15 dias), `status`, `decision text`, `legal_basis text`, `eliminated_categories jsonb`, `retained_categories jsonb`, `responded_at`, `artifact_expires_at`. Resposta fundamentada e requisito de conformidade
+22. **Preferencia de comunicacao** — tabela ou colunas para opt-out por canal/finalidade, vinculadas ao consentimento opcional. Consultadas pela regua e pelos lembretes antes de cada envio
+23. **Tabela `session_note_drafts`** — envelope completo (7 colunas de criptografia), AAD `patient_id|session_id`, RLS so para psicologa, nenhuma policy de SELECT para `patient`, `DELETE` na transacao que grava evolucao, job de limpeza para orfaos
+24. **`log_audit_system`** — funcao separada (descrita no item 4). `REVOKE EXECUTE ON FUNCTION log_audit_system FROM authenticated, anon`
+25. **Serializacao do hash chain** — `pg_advisory_xact_lock` (ou ancora de linha unica com `FOR UPDATE`) no trigger `BEFORE INSERT` do `audit_log`
+26. **Caminho assincrono do audit log** — tabela `audit_log_pending` drenada por cron; ou tornar `VIEW_RECORD` sincrono (custo ~5ms)
+27. **`REVOKE SELECT` de colunas cifradas** — `cpf_ciphertext`, `cpf_iv`, `cpf_tag`, `cpf_dek_*`, `cpf_hmac`, e equivalentes em `clinical_records`/`anamnesis`/`session_note_drafts`, nao selecionaveis por `authenticated`. Alternativa: views sem essas colunas
+28. **RLS de `clinical_records`, `anamnesis`, `session_note_drafts`** — nenhuma policy concede SELECT de `clinical_records` a `patient`. `anamnesis`: paciente tem INSERT/UPDATE/SELECT da propria linha sem acesso a colunas de ciphertext; psicologa tem SELECT; ninguem tem DELETE durante retencao. Clausula `(auth.jwt()->>'aal') = 'aal2'` nas policies clinicas
+29. **Idempotencia dos lembretes e da regua** — constraints `UNIQUE (session_id, reminder_type)` e `UNIQUE (charge_id, step)` como constraints de banco, nao verificacao na aplicacao
+30. **`CRON_SECRET` no Vault** — `vault.decrypted_secrets` na chamada `net.http_post`; `timingSafeEqual` na Edge Function
+31. **`charges`** — incluir `status` com enum que cobre `pending_creation` (para o fluxo `create-charge` / `retry-charges`), `psychologist_id` para ownership
+32. **Verificacoes que o Data Architect deve deixar executaveis** — `rowsecurity=false` → 0 linhas; `relforcerowsecurity=false` para `audit_log` → 0 linhas; UPDATE/DELETE/TRUNCATE em `audit_log` como `service_role` → excecao do trigger; UPDATE em `sessions` como paciente → erro de permissao; SELECT de coluna de ciphertext como `authenticated` → erro de permissao; verificacao da cadeia de hash → funcao dedicada
+
+---
+
+## 18. Requisitos de implementacao para o Stack Agent
+
+Condicoes de aprovacao em code review derivadas do Security Review da arquitetura. O Backlog deve transforma-las em criterios de Definition of Done.
+
+1. **Wrapper de autorizacao em toda Server Action exportada.** Nenhuma action confia em guard de layout. Gate: `grep -L "withPsychologist\|withPatient\|withPublicAction" src/lib/actions/*.ts` retorna vazio.
+2. **Modulo `logger.ts` unico com allowlist de chaves.** `console.*` fora dele reprova. Nunca logar objeto de erro do Postgres, resposta do Asaas ou payload de webhook.
+3. **Validacao de chaves no boot com falha ruidosa.** Proibido `process.env.X!` em codigo de cripto. Usar `keys.ts`.
+4. **`no-store` + `force-dynamic` em toda rota que decifra.** `Content-Disposition: attachment` no recibo.
+5. **`/confirmar/[token]`: GET so renderiza, POST executa.** Tokens separados por acao.
+6. **Browser client com lista explicita de colunas.** `select('*')` proibido onde houver ciphertext.
+7. **Rate limiting:** login, reenvio de convite (3/paciente/hora), `issue-livekit-token` (10/usuario/min), `/confirmar/*`, solicitacao LGPD.
+8. **Politica de senha:** minimo 10 + verificacao de senha vazada habilitada no Supabase Auth; timeout de inatividade.
+9. **Alteracao de e-mail com double opt-in** no novo endereco + notificacao ao antigo; mensagens de login/reset genericas (nao revelar existencia de conta).
+10. **PDF por lib JS pura** (`pdfkit` ou `pdf-lib`); proibido puppeteer/chromium. `npm ci --ignore-scripts` + `npm audit --audit-level=high` no gate de deploy.
+11. **`x-forwarded-for` com regra de confianca do proxy** antes de virar evidencia de auditoria.
+12. **Export LGPD:** geracao on-demand (como recibo), download autenticado, signed URL de vida curta se persistir, artefato expiravel, registrado em audit log.
 
 ---
 
@@ -1159,4 +815,5 @@ Lista de requisitos estruturais que este documento impoe ao schema:
 
 | Versao | Data | Mudanca |
 |--------|------|---------|
-| 1.0 | 2026-09-09 | Arquitetura inicial: estrutura de pastas, fronteiras de confianca, padrao de modulo, integracoes (Asaas, LiveKit, Resend), criptografia envelope, audit log 4 camadas, RBAC, headers HTTP, variaveis de ambiente, testes, deploy |
+| 1.0 | 2026-09-09 | Arquitetura inicial |
+| 1.1 | 2026-09-09 | Correcoes do Security Review: AC1 (create-charge), AC2 (RLS column-level/RPC), AA1-AA2 (middleware nao e fronteira/wrappers), AA3 (aal2), AA4 (validacao de chaves), AA5-AA7 (cache/Dockerfile/supply chain), AA8 (confirmar GET/POST), AA9 (allowlist service_role), AA10 (duas funcoes audit), AA11 (session notes cifradas), AA12 (risco residual ADR-0001). Reescrita da secao 17 (32 requisitos ao Data Architect). Nova secao 18 (12 requisitos ao Stack Agent) |
