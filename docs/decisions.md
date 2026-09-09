@@ -85,3 +85,10 @@ Registro de decisões de produto, arquitetura e técnicas. Ver `~/.claude/CLAUDE
 **Impacto aceito:** Busca no histórico de evoluções vira decrypt-then-filter, sem índice em plaintext.
 **Alternativas descartadas:** `pgcrypto` (chave vaza em logs e `pg_stat_statements`); Vault para conteúdo clínico (root key no mesmo provedor).
 **Escopo:** Prontuário. Mover a KEK para `supabase secrets` "por simplicidade" é motivo de reprovação em code review.
+
+### [2026-09-09] Conformidade CFP migrada da Resolução 11/2018 para a 09/2024
+**Contexto:** O planejamento inicial foi feito sobre a Resolução CFP nº 11/2018, que exigia cadastro na plataforma e-Psi. O dev corrigiu: a **Resolução CFP nº 09/2024** substituiu as Resoluções 11/2018 e 04/2020, revogou a obrigatoriedade do e-Psi, e a plataforma foi desativada em 31/08/2024.
+**Decisão:** Toda conformidade CFP do produto passa a se referir à Resolução 09/2024. Menções a e-Psi nos docs anteriores são históricas e não devem ser implementadas. O CRP ativo continua obrigatório.
+**Efeito material — não é só remoção:** a 09/2024 desloca a decisão para a avaliação técnica da própria psicóloga, que **responde diretamente pelos critérios usados**, e exige que a **avaliação de viabilidade do atendimento remoto seja registrada no prontuário, com data**. Isso é um requisito funcional novo (Emenda E6) que substitui o e-Psi como o item de conformidade CFP do software — e é mais relevante, porque é o documento que protege a psicóloga perante o CRP.
+**Outros efeitos:** o termo de consentimento passa a exigir cláusulas de formato online, política de faltas e queda de conexão (E7); as vedações automáticas de atendimento em crise, emergência, violência e desastre foram revogadas, então o app **não** deve bloquear esses casos por regra rígida (E8).
+**Escopo:** Prontuário, consentimento, onboarding da psicóloga, e qualquer validação de elegibilidade de caso.
