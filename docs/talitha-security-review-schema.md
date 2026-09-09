@@ -541,8 +541,209 @@ Pendencias que dependem de acao do desenvolvedor ou da cliente, nao de agentes:
 
 ---
 
+## Secao 6: Re-verificacao (rodada 2)
+
+**Data:** 2026-09-09
+**Contexto:** Data Architect aplicou patches A1-A4, M1, B1-B2, R19 e incorporou emendas E5-E8 na v1.1. Esta re-verificacao valida os patches no SQL, as emendas novas, regressoes e as recusas do Data Architect.
+
+---
+
+### 6.1 Verificacao dos patches
+
+| Patch | Veredicto | Evidencia |
+|-------|-----------|-----------|
+| **A1** -- `log_audit` com validacao de papel e ownership | **Fechado** | `120800` linhas 46-61: role lido de `profiles` (nunca JWT), ownership validada via JOIN `patients.user_id` (paciente) e `patients.psychologist_id` (psicologa). `search_path = public`. |
+| **A2** -- `fn_patients_set_retention` + `fn_block_delete_during_retention` | **Fechado** (com ressalva N1) | `120100` linhas 103-123: trigger calcula `retention_until = treatment_ended_at + 5 years` quando `treatment_ended_at` muda de NULL para valor. Impede reducao manual (linhas 111-116). `fn_block_delete_during_retention` (linhas 130-143): bloqueia DELETE quando `retention_until IS NULL AND treatment_ended_at IS NOT NULL` (safety net) e quando `retention_until > now()`. **Ressalva: ver issue N1 (regressao).** |
+| **A3** -- `consents` append-only completo | **Fechado** | `120500` linhas 39-55: `FORCE ROW LEVEL SECURITY` + 3 triggers (`trg_consents_no_update`, `trg_consents_no_delete`, `trg_consents_no_truncate`) usando `fn_block_append_only_mutation`. `121000` linha 51: `REVOKE UPDATE, DELETE, TRUNCATE ON consents FROM service_role`. 4 camadas ativas (RLS + FORCE + triggers + REVOKE). |
+| **A4** -- REVOKE table-level + GRANT column-level | **Fechado** | `121000` linhas 62-141: 8 tabelas cobertas (patients, profiles, clinical_records, clinical_record_versions, anamnesis, session_note_drafts, receipts, remote_viability_assessments). Todas seguem `REVOKE ALL FROM authenticated` + `GRANT SELECT (colunas nao-cifradas)`. Nenhuma coluna de ciphertext no GRANT SELECT. Verificacao linha a linha na tabela abaixo. |
+| **M1** -- `clinical_record_versions` append-only | **Fechado** | `120300` linhas 96-102: triggers `trg_clinical_record_versions_no_update` e `trg_clinical_record_versions_no_delete` usando `fn_block_append_only_mutation`. |
+| **B1** -- REVOKE EXECUTE de `anon` | **Fechado** | `121000` linhas 36-45: 6 RPCs revogadas de anon (`log_audit`, `enter_waiting_room`, `admit_patient`, `cancel_session`, `fn_verify_audit_chain`, `consume_email_token`). `log_audit_system` ja revogada de authenticated+anon (linha 33). |
+| **B2** -- trigger impedindo paciente de escrever colunas da psicologa | **Fechado** | `120900` linhas 49-73: `fn_profiles_protect_psychologist_columns` verifica role no banco, bloqueia paciente de alterar `crp`, `crp_region`, `specialty`, `default_session_value`, `cancellation_policy_hours`, `cpf_ciphertext`. Belt-and-suspenders com A4 (GRANT UPDATE nao inclui cpf columns). |
+| **R19** -- RPC `consume_email_token` | **Fechado** | `120800` linhas 261-299: `SECURITY DEFINER SET search_path = public`. `FOR UPDATE` na SELECT impede race condition de dois usos simultaneos. Validacao atomica: (1) `used_at IS NOT NULL` rejeita token ja usado, (2) `expires_at < now()` rejeita expirado, (3) `purpose != p_expected_purpose` rejeita purpose mismatch. Mensagens genericas ("Invalid or expired token") para NOT FOUND e purpose mismatch -- nao vazam informacao sobre existencia do token. Token de um purpose nao serve para outro. Comparacao via WHERE clause SQL -- timing attack impraticavel sobre rede. REVOKE de anon em 121000:45. |
+
+**Requisitos parciais agora completos:**
+
+| Requisito | Antes (v1.0) | Agora (v1.1) | Veredicto |
+|-----------|-------------|-------------|-----------|
+| R11 (consents append-only) | RLS sem UPDATE/DELETE, mas sem trigger/REVOKE para service_role | 3 triggers + FORCE RLS + REVOKE service_role (4 camadas) | **Completo** |
+| R12 (versions append-only) | RLS so INSERT, sem trigger para service_role | 2 triggers (UPDATE/DELETE bloqueados) | **Completo** |
+| R14 (retention_until auto-calc) | Coluna existia mas sem auto-calculo; DELETE permitido se NULL | Trigger auto-calcula em patients; fn_block_delete bloqueia se NULL+tratamento encerrado | **Completo** (com N1) |
+| R19 (token via RPC SD) | Tabela sem RPC; validacao dependia da aplicacao | RPC `consume_email_token` com validacao atomica | **Completo** |
+
+#### Verificacao detalhada do patch A4 (coluna por coluna)
+
+| Tabela | Colunas no GRANT SELECT | Colunas omitidas (cipher) | INSERT/UPDATE/DELETE | Correto? |
+|--------|------------------------|--------------------------|---------------------|----------|
+| patients | 14: id, user_id, psychologist_id, full_name, email, phone, date_of_birth, status, treatment_started_at, treatment_ended_at, deleted_at, retention_until, created_at, updated_at | 8: cpf_ciphertext..cpf_kek_version, cpf_hmac | Nenhum (service_role) | Sim |
+| profiles | 13: id, role, full_name, email, phone, crp..cancellation_policy_hours, onboarding_completed, created_at, updated_at | 7: cpf_ciphertext..cpf_kek_version | UPDATE em 10 cols (role excluido) | Sim |
+| clinical_records | 12: id, patient_id, session_id, psychologist_id, session_date, duration_minutes, mood, kek_version, deleted_at, retention_until, created_at, updated_at | 6: content_ciphertext..dek_tag | INSERT + UPDATE table-level | Sim |
+| clinical_record_versions | 7: id, record_id, version_number, kek_version, mood, edited_by, created_at | 6: content_ciphertext..dek_tag | INSERT table-level | Sim |
+| anamnesis | 10: id, patient_id, therapy_reason, previous_treatment, kek_version, filled_at, deleted_at, retention_until, created_at, updated_at | 6: content_ciphertext..dek_tag | INSERT + UPDATE table-level | Sim |
+| session_note_drafts | 7: id, session_id, patient_id, psychologist_id, kek_version, created_at, updated_at | 6: content_ciphertext..dek_tag | INSERT + UPDATE + DELETE table-level | Sim |
+| receipts | 17: id, charge_id, patient_id..amount, payment_method, cpf_kek_version, status, created_at | 12: patient_cpf_* (6) + psych_cpf_* (6) | Nenhum (service_role) | Sim |
+| remote_viability_assessments | 9: id, patient_id, psychologist_id, version_number, is_viable, kek_version, assessed_at, retention_until, created_at | 6: content_ciphertext..dek_tag | INSERT table-level | Sim |
+
+Nenhuma coluna de ciphertext sobrou no GRANT. Nenhuma coluna necessaria para a aplicacao foi omitida. INSERT/UPDATE table-level sao filtrados por RLS (ownership + aal2 onde clinico). `kek_version` no SELECT e correta -- e metadado de chave (SMALLINT), nao ciphertext, necessaria para saber qual KEK usar na decifracao server-side.
+
+---
+
+### 6.2 Verificacao das emendas E5, E6, E8
+
+#### E5 -- e-Psi removido
+
+**Veredicto: Fechado.**
+
+A tabela `profiles` em `120100` nao tem coluna `epsi_status`. O campo existe apenas em comentarios explicativos ("E5: epsi_status removed"). Busca textual em todas as 12 migrations: zero ocorrencias de `epsi_status` como DDL ou referencia ativa -- apenas 2 comentarios historicos em `120100` linhas 5 e 22. Documento `talitha-data-architecture.md` registra a remocao com justificativa legal. Nenhum vestigio funcional.
+
+#### E6 -- `remote_viability_assessments`
+
+**Veredicto: Correto -- mesmo rigor das tabelas clinicas.**
+
+Checklist de paridade com `clinical_records`:
+
+| Criterio | clinical_records | remote_viability_assessments | Paridade |
+|----------|-----------------|------------------------------|----------|
+| Envelope encryption (7 cols) | content_ciphertext..kek_version | content_ciphertext..kek_version | Sim |
+| Append-only UPDATE | Sem restricao alem de RLS | `trg_viability_no_update` (fn_block_append_only_mutation) | **Mais rigoroso** |
+| Delete com retencao | `trg_clinical_records_block_delete` | `trg_viability_no_delete` | Sim |
+| RLS com aal2 | SELECT/INSERT/UPDATE com aal2 | SELECT/INSERT com aal2 | Sim |
+| PK UUID | gen_random_uuid() | gen_random_uuid() | Sim |
+| Timestamps | TIMESTAMPTZ | TIMESTAMPTZ (assessed_at, retention_until, created_at) | Sim |
+| REVOKE/GRANT A4 | REVOKE ALL + GRANT SELECT (12 cols) + INSERT + UPDATE | REVOKE ALL + GRANT SELECT (9 cols) + INSERT | Sim |
+| Indice | idx_clinical_records_patient_id | idx_viability_patient_id | Sim |
+| ENABLE ROW LEVEL SECURITY | Sim | Sim | Sim |
+| FORCE ROW LEVEL SECURITY | Nao | Nao | Sim (paridade) |
+| REVOKE service_role | Nao | Nao | Sim (paridade) |
+
+O `remote_viability_assessments` e ligeiramente mais rigoroso que `clinical_records` em um ponto: UPDATE e bloqueado por trigger (append-only; nova avaliacao = nova `version_number`), enquanto `clinical_records` permite UPDATE pela psicologa (com versionamento em `clinical_record_versions`). Correto -- a avaliacao de viabilidade e documento datado que nao deve ser editado, apenas versionado.
+
+Tabela modelada como entidade separada (nao extensao de clinical_records), com justificativa documentada: ciclo de vida diferente (por paciente, nao por sessao), append-only independente, RLS e retencao proprios.
+
+#### E8 -- Vedacoes de elegibilidade clinica removidas
+
+**Veredicto: Correto.**
+
+Busca textual em todas as migrations por `crisis`, `emergenc`, `violen`, `disaster`, `elegib`, `vedac`, `inelig`: unica ocorrencia e "emergency contact" em comentario da tabela `anamnesis` (campo de dados, nao mecanismo de bloqueio). Nenhum CHECK, enum ou trigger impede atendimento por criterio de elegibilidade clinica. O CHECK de idade >= 18 (E1) permanece intacto em `patients.chk_patient_adult` -- correto, e decisao do dev, nao vedacao da norma.
+
+---
+
+### 6.3 Regressoes
+
+#### Resultado: 1 regressao funcional encontrada (nao de seguranca)
+
+**N1 (Medio): `fn_block_delete_during_retention` referencia `OLD.treatment_ended_at` em tabelas que nao tem essa coluna**
+
+**Arquivo:** `120100_core_tables.sql` linhas 130-143
+**Trecho critico:**
+```sql
+IF OLD.retention_until IS NULL AND OLD.treatment_ended_at IS NOT NULL THEN
+  RAISE EXCEPTION 'retention_until not set after treatment end...';
+END IF;
+```
+
+**Tabelas afetadas:** `clinical_records` (trigger `trg_clinical_records_block_delete`), `anamnesis` (trigger `trg_anamnesis_block_delete`), `remote_viability_assessments` (trigger `trg_viability_no_delete`). Nenhuma destas tabelas tem coluna `treatment_ended_at` -- ela existe apenas em `patients`.
+
+**Comportamento:** Em PL/pgSQL, `OLD` e do tipo `RECORD`. Acessar `OLD.treatment_ended_at` em tabela que nao tem essa coluna causa `ERROR: record "old" has no field "treatment_ended_at"` em runtime. Todo DELETE nestas 3 tabelas falhara com este erro, independentemente do estado de retencao.
+
+**Impacto de seguranca:** Nenhum -- falha segura (bloqueia todas as delecoes). O cenario perigoso seria uma funcao que permite delecao indevida; esta bloqueia demais.
+
+**Impacto funcional:** Eliminacao LGPD apos expiracao dos 5 anos de retencao sera impossivel sem correcao nestas 3 tabelas. O cenario e distante (5+ anos), mas o fix e trivial.
+
+**Causa:** Patch A2 adicionou o check de `OLD.treatment_ended_at` a uma funcao compartilhada entre `patients` (que tem a coluna) e 3 tabelas clinicas (que nao tem). A versao pre-patch acessava apenas `OLD.retention_until`, presente em todas.
+
+**Correcao sugerida** (task de backlog):
+```sql
+CREATE OR REPLACE FUNCTION fn_block_delete_during_retention()
+RETURNS TRIGGER AS $$
+BEGIN
+  -- Safety net only for tables with treatment_ended_at (patients)
+  IF TG_TABLE_NAME = 'patients' THEN
+    IF OLD.retention_until IS NULL AND OLD.treatment_ended_at IS NOT NULL THEN
+      RAISE EXCEPTION 'retention_until not set after treatment end -- cannot delete safely';
+    END IF;
+  END IF;
+  IF OLD.retention_until IS NOT NULL AND OLD.retention_until > now() THEN
+    RAISE EXCEPTION 'Cannot delete record during retention period (until %)', OLD.retention_until;
+  END IF;
+  RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+```
+
+#### Demais verificacoes de regressao
+
+| Verificacao | Resultado |
+|------------|-----------|
+| RLS ENABLE em todas as 20 tabelas | OK -- todas tem `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` |
+| FORCE ROW LEVEL SECURITY | OK -- consents (120500:41) e audit_log (120700:47), consistente com v1.0 |
+| REVOKE ALL (A4) vs GRANTs de outras migrations | OK -- REVOKE e GRANT estao ambos em 121000 (ultima migration estrutural), sem conflito de ordem |
+| Policies RLS com subqueries dependem de colunas GRANTeadas | OK -- verificado: subqueries referenciam colunas presentes no GRANT SELECT da tabela consultada |
+| Ordem das 12 migrations | OK -- dependencias respeitadas (extensoes -> tabelas base -> tabelas dependentes -> RPCs -> policies -> grants -> seed) |
+| search_path fixo em SECURITY DEFINER | OK -- todas as 8 funcoes SD tem `SET search_path = public` |
+| GRANT EXECUTE restrito nas RPCs novas | OK -- `consume_email_token` tem REVOKE de anon (121000:45). `fn_profiles_sync_role_metadata` e trigger (nao RPC), nao precisa de REVOKE |
+| Tabela nova (E6) em todas as listas | OK -- RLS (120300:226), policies (120900:232-245), REVOKE/GRANT (121000:136-141), indice (121000:174), triggers append-only (120300:229-234) |
+
+---
+
+### 6.4 Avaliacao das recusas do Data Architect
+
+| Recusa | Justificativa do Data Architect | Avaliacao | Veredicto |
+|--------|--------------------------------|-----------|-----------|
+| **M2** -- VIEW_RECORD transacional | "Responsabilidade do Stack Agent, nao do schema" | **Aceitavel.** O schema fornece os instrumentos (RPC `log_audit`, transacoes). O acoplamento transacional (read + log em unico `BEGIN...COMMIT`) e responsabilidade da aplicacao. Deve virar Definition of Done no Backlog. | Aceito |
+| **B3** -- texto livre em `cancellation_reason` / `metadata` | "Defesa fica no logger.ts" | **Aceitavel.** Validacao na aplicacao (Server Actions + logger.ts) e o local correto -- CHECK de formato no banco seria fragil e restritivo demais. Deve virar DoD. | Aceito |
+| **B4** -- policies single-tenant | "Correto para 1 psicologa" | **Aceitavel.** Policies com `EXISTS (... role = 'psychologist')` sem filtro de `psychologist_id` sao corretas para 1 psicologa. Refactoring so se o produto crescer para multi-tenant. | Aceito |
+| **B5** -- contagem de RPCs no status file | Corrigido | **Aceitavel.** Status file atualizado. Terminologia imprecisa (trigger != RPC) mas sem impacto. | Aceito |
+
+---
+
+### 6.5 Issues novos
+
+#### Medio
+
+**N1: `fn_block_delete_during_retention` -- regressao do patch A2** (detalhado na secao 6.3)
+
+Severidade Medio porque falha segura (bloqueia demais, nao permite demais) e o cenario de uso e distante (5+ anos). Correcao simples, deve entrar como task no backlog.
+
+---
+
+### 6.6 Ressalvas para o Backlog (Definition of Done)
+
+O Backlog deve incorporar as seguintes ressalvas como Definition of Done nas tasks correspondentes:
+
+| # | Ressalva | Origem | DoD para o Stack Agent |
+|---|----------|--------|------------------------|
+| DoD-1 | VIEW_RECORD transacional | M2 (recusa aceita) | Toda leitura de conteudo clinico decifrado (clinical_records, anamnesis, remote_viability_assessments) deve executar SELECT + `log_audit` em transacao unica (`BEGIN...COMMIT`) ou RPC wrapper. Se o log falhar, a leitura nao retorna dados ao client. |
+| DoD-2 | Sanitizacao de campos operacionais | B3 (recusa aceita) | Server Actions que escrevem `cancellation_reason` (sessions) ou `metadata` (audit_log) validam: comprimento maximo, ausencia de dados clinicos via allowlist de termos no `logger.ts`. |
+| DoD-3 | Correcao de `fn_block_delete_during_retention` | N1 (regressao) | Patch na funcao para checar `TG_TABLE_NAME` antes de acessar `OLD.treatment_ended_at`. Aplicar via nova migration antes de qualquer task que envolva soft delete ou eliminacao LGPD. |
+| DoD-4 | Verificacao de column-level GRANT em provisionamento | A4/H1 | Apos provisionar o Supabase, executar query V7 (secao 4) para confirmar que `SELECT content_ciphertext FROM clinical_records` falha como `authenticated`. Se passar, os default privileges precisam de ajuste. |
+
+---
+
+### 6.7 Veredicto final
+
+**APROVADO**
+
+| Metrica | Resultado |
+|---------|-----------|
+| Patches verificados | 9/9 Fechados |
+| Requisitos parciais fechados | 4/4 Completos (R11, R12, R14, R19) |
+| Requisitos totais | 32/32 implementados (antes: 28 impl + 4 parciais) |
+| Emendas E5/E6/E8 | Todas corretas no SQL |
+| Regressoes de seguranca | 0 |
+| Regressoes funcionais | 1 (N1, Medio, falha segura) |
+| Issues novos Critical/High | 0 |
+| Issues novos Medium | 1 (N1) |
+| Recusas aceitaveis | 4/4 |
+
+O schema v1.1 fecha todos os 32 requisitos de seguranca, incorpora as emendas E5-E8 corretamente, e nao introduz regressoes de seguranca. A unica regressao encontrada (N1) e funcional, falha segura, e tem correcao trivial documentada. Os 4 items recusados pelo Data Architect sao proporcionais e aceitaveis, com ressalvas transformadas em Definition of Done para o Backlog.
+
+**Backlog liberado.**
+
+---
+
 ## Historico de versoes
 
 | Versao | Data | Mudanca |
 |--------|------|---------|
 | 1.0 | 2026-09-09 | Review inicial: 28 implementados, 4 parciais, 0 nao implementados. 4 Altos, 2 Medios, 5 Baixos. Aprovado com ressalvas |
+| 1.1 | 2026-09-09 | Re-verificacao (rodada 2): 9/9 patches Fechados, 4/4 parciais agora Completos, emendas E5/E6/E8 corretas, 1 regressao funcional (N1 Medio), 4 recusas aceitaveis. **Aprovado.** Backlog liberado |
