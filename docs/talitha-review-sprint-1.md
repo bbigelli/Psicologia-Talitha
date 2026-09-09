@@ -31,7 +31,7 @@ Projeto scaffoldado com Next.js 16, TypeScript strict, design system aplicado, S
 
 ## Pontos Positivos
 
-1. **Criptografia implementada com rigor.** `keys.ts` faz tripla validacao (presenca, base64 valido, 32 bytes) com falha ruidosa. `delete process.env[envName]` apos carregar e defense-in-depth legítima -- reduz a superfície para bugs de information disclosure (e.g., error handler que loga `process.env`). Sem `process.env.X!` em nenhum lugar do modulo cripto.
+1. **Criptografia implementada com rigor.** `keys.ts` faz tripla validacao (presenca, base64 valido, 32 bytes) com falha ruidosa. `delete process.env[envName]` apos carregar e defense-in-depth legitima -- reduz a superficie para bugs de information disclosure (e.g., error handler que loga `process.env`). Sem `process.env.X!` em nenhum lugar do modulo cripto.
 
 2. **Envelope encryption correta.** AES-256-GCM com IV unico por operacao (tanto para conteudo quanto para DEK wrapping -- `randomBytes(IV_LENGTH)` chamado separadamente). AAD `ownerId|contextId` aplicado no cipher de conteudo, prevenindo swap cross-patient. O teste de AAD incorreto genuinamente falha por GCM authentication failure (o tag foi computado com AAD original; `setAAD(wrong_aad)` + `final()` rejeita a tag).
 
@@ -162,10 +162,10 @@ await import(`@/lib/crypto/keys?bust=${randomBytes(4).toString("hex")}-1`)
 **O cache-buster funciona corretamente na versao atual do Vitest.** Em ESM, o module specifier inclui a query string no cache key. Cada teste gera um specifier unico (`keys?bust=abc-1`, `keys?bust=def-2`), forçando re-avaliacao do modulo `keys.ts` com o estado do env naquele momento. O `beforeEach` limpa ambas as variaveis, e cada teste configura o cenario desejado antes do import.
 
 **Os testes testam o que afirmam:**
-- Test 1 (KEK missing): env sem KEK → import fresco → `loadKey` le env → KEK ausente → throw "Missing RECORD_ENCRYPTION_KEK_V1" -- CORRETO
-- Test 2 (CPF_KEY missing): env sem CPF_KEY → import fresco → throw "Missing CPF_INDEX_KEY" -- CORRETO
-- Test 3 (key short): KEK com 16 bytes → throw "must be exactly 32 bytes" -- CORRETO
-- Test 4 (invalid base64): KEK invalido → throw (por length mismatch apos decode) -- CORRETO
+- Test 1 (KEK missing): env sem KEK -> import fresco -> `loadKey` le env -> KEK ausente -> throw "Missing RECORD_ENCRYPTION_KEK_V1" -- CORRETO
+- Test 2 (CPF_KEY missing): env sem CPF_KEY -> import fresco -> throw "Missing CPF_INDEX_KEY" -- CORRETO
+- Test 3 (key short): KEK com 16 bytes -> throw "must be exactly 32 bytes" -- CORRETO
+- Test 4 (invalid base64): KEK invalido -> throw (por length mismatch apos decode) -- CORRETO
 
 **Risco residual:** A tecnica depende do comportamento de ESM module caching do Vitest (specifiers com query strings sao cache entries distintas). Isso nao e documentado pelo Vitest e poderia mudar numa major version. O padrao idiomatico e `vi.resetModules()`. Os 4 warnings sao ruido no output de teste que confunde.
 
@@ -274,7 +274,7 @@ Nenhum.
 - Root layout monta `<Toaster>` do `sonner`. `src/components/ui/toast.tsx` usa `@base-ui/react/toast`. Dois sistemas de toast coexistem. O architecture.md e CLAUDE.md global mandatam Sonner. Considerar remover `toast.tsx` ou manter apenas como fallback.
 
 **S7: `--font-mono: var(--font-geist-mono)` referencia variavel indefinida**
-- Em `globals.css` `@theme inline`, `--font-mono` aponta para `--font-geist-mono` que nao existe (Geist Mono nao e importado no layout). Texto monoespacado cai no fallback do browser, o que funciona, mas e uma referencia orfã.
+- Em `globals.css` `@theme inline`, `--font-mono` aponta para `--font-geist-mono` que nao existe (Geist Mono nao e importado no layout). Texto monoespacado cai no fallback do browser, o que funciona, mas e uma referencia orfa.
 
 **S8: `process.env.NEXT_PUBLIC_*!` nos Supabase clients**
 - `client.ts`, `server.ts`, e `middleware.ts` usam `process.env.NEXT_PUBLIC_SUPABASE_URL!`. Embora essas vars publicas estejam sempre presentes em deploy correto, a validacao explicita (como `admin.ts` faz) daria erros mais claros se o deploy estiver misconfigured.
@@ -298,3 +298,129 @@ Apos esta correcao, a sprint esta em condicoes de aprovacao. As 8 Suggestions sa
 - S6: Remover toast.tsx duplicado (manter Sonner)
 - S7: Corrigir referencia `--font-geist-mono`
 - S8: Validar env vars publicas explicitamente nos Supabase clients
+
+---
+
+## Re-verificacao (rodada 2)
+
+**Data:** 2026-09-09
+**Contexto:** Stack Agent aplicou correcao do W1 e 7 das 8 Suggestions. S5 recusada com justificativa. Re-verificacao pontual dos itens alterados.
+
+### Item 1: W1 esta realmente fechado?
+
+**FECHADO.**
+
+- `src/lib/supabase/admin.ts` linha 1: `import "server-only"` -- primeira linha, antes de qualquer outro import. Correto.
+- `src/lib/crypto/keys.ts` linha 1: `import "server-only"` -- idem. Boa decisao: `envelope.ts` e `blind-index.ts` importam de `keys.ts` e herdam a protecao transitivamente. Se um Client Component tentar importar qualquer modulo cripto, o build falha.
+- `package.json` linha 26: `"server-only": "^0.0.1"` em **`dependencies`** (nao `devDependencies`). Correto -- se estivesse em `devDependencies`, `npm ci --omit=dev` no Dockerfile o excluiria e o build de producao quebraria silenciosamente ou perderia a protecao.
+
+### Item 2: O alias do `server-only` no `vitest.config.ts` pode vazar para producao?
+
+**NAO PODE VAZAR. A barreira esta intacta.**
+
+Analise da cadeia de resolucao de modulos:
+
+| Ferramenta | Config que consome | Resolve `server-only` como |
+|------------|-------------------|---------------------------|
+| `next build` (webpack) | `next.config.ts` | `node_modules/server-only/index.js` (pacote real -- lanca erro em Client Component) |
+| `vitest run` (vite) | `vitest.config.ts` | `src/__tests__/stubs/server-only.ts` (no-op) |
+
+Os dois caminhos sao completamente separados:
+
+1. **`next.config.ts`** -- verificado: nenhum `webpack.resolve.alias`, nenhum plugin custom, nenhuma referencia a `vitest.config.ts`. Contem apenas `output`, `productionBrowserSourceMaps`, `experimental.serverActions`, `images`, e `headers`.
+2. **`tsconfig.json`** -- verificado: `paths` contem apenas `"@/*": ["./src/*"]`. Nenhum mapeamento para `server-only`. E mesmo que contivesse, paths do tsconfig sao resolucao de tipo em design-time, nao resolucao de modulo em build-time (webpack ignora tsconfig paths a menos que se use `tsconfig-paths-webpack-plugin`, que nao esta configurado).
+3. **Nenhum arquivo compartilhado** faz ponte entre as duas configuracoes. O `vitest.config.ts` nao e importado por nenhum outro config. O alias e um `resolve.alias` do Vite, que webpack nunca le.
+
+**Conclusao:** O alias `"server-only" -> stub` e confinado ao Vitest. Em producao, `import "server-only"` resolve para o pacote real em `node_modules/`, que lanca erro se importado de um Client Component. A barreira `server-only` funciona exatamente como desenhada.
+
+### Item 3: O stub enfraquece os testes?
+
+**Nao ha perda de cobertura.**
+
+O stub neutraliza `import "server-only"` nos testes, mas a protecao que `server-only` oferece e **build-time via webpack**, nao runtime. Em um ambiente Vitest (Node.js puro), o pacote real `server-only` simplesmente lancaria um erro generico porque nao detecta contexto Next.js -- nao porque detectou um Client Component. Testar esse comportamento em Vitest nao provaria nada util.
+
+Os testes existentes verificam o que importa: carregamento de chaves, validacao de tamanho, envelope encryption, HMAC. A protecao build-time contra importacao de Client Component e verificavel apenas por `next build` (que ja roda nos gates do CI), nao por testes unitarios.
+
+### Item 4: S3 -- `safeErrorCode` reescrita
+
+**FECHADA. Sem vazamento.**
+
+A funcao agora usa classificacao por keyword:
+- `timeout` / `econnrefused` -> `NETWORK_ERROR`
+- `permission` / `unauthorized` -> `AUTH_ERROR`
+- `duplicate` / `unique` -> `DUPLICATE_ERROR`
+- `not found` / `no rows` -> `NOT_FOUND`
+- `validation` / `invalid` -> `VALIDATION_ERROR`
+- Fallback: `INTERNAL_ERROR`
+
+A mensagem original e processada internamente via `.toLowerCase().includes(...)` mas **nunca retornada**. Apenas as strings constantes de classificacao saem da funcao. Um erro com mensagem `"duplicate key violates unique constraint on patients.cpf_hmac"` retorna simplesmente `"DUPLICATE_ERROR"` -- sem table name, sem column name, sem fragmento SQL.
+
+O fallback `INTERNAL_ERROR` nao carrega nenhum detalhe.
+
+### Item 5: S8 -- `getEnvOrThrow()` falha no boot ou no primeiro uso?
+
+**Falha na primeira avaliacao do modulo, nao no boot do processo.**
+
+Nos tres clientes Supabase, `getEnvOrThrow()` e chamada em **module scope** (linhas 11-12 de `client.ts`, `server.ts` e `middleware.ts`):
+```typescript
+const supabaseUrl = getEnvOrThrow("NEXT_PUBLIC_SUPABASE_URL")
+const supabaseAnonKey = getEnvOrThrow("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+```
+
+Em Next.js standalone mode (`node server.js`), modulos sao avaliados **lazily** na primeira requisicao que os importa. Nao ha um boot hook que carregue todos os modulos eagerly. Portanto:
+
+- `middleware.ts`: avaliado na **primeira requisicao HTTP** que match o middleware matcher. Se a variavel estiver ausente, a primeira requisicao falha. Isso e efetivamente "boot" na pratica (middleware roda em toda rota).
+- `server.ts`: avaliado quando o primeiro Server Component/Action o importa.
+- `client.ts`: avaliado quando o primeiro Client Component carrega o chunk no browser. Para vars `NEXT_PUBLIC_*`, o valor e inlined em build-time -- se ausente durante `next build`, o build falha (ou o valor fica `undefined` e `getEnvOrThrow` lanca no browser).
+
+Este comportamento e **identico ao de `keys.ts`** -- ambos validam em module scope, ambos falham na primeira importacao. E o mais cedo possivel na arquitetura Next.js. Um health check que nao acessa rotas protegidas veria o app como saudavel, mas a primeira requisicao real falharia. Isso e uma limitacao do Next.js, nao do codigo.
+
+### Item 6: A recusa de S5 e aceitavel?
+
+**Aceitavel. A recusa procede.**
+
+Argumentos do Stack Agent:
+1. `patient_id` e um UUID opaco -- nao e PII isoladamente. So se torna identificavel via JOIN com a tabela `patients`, que requer acesso ao banco.
+2. Quem acessa logs de aplicacao (infra/ops) tipicamente ja tem acesso ao banco onde `patient_id` e visivel.
+3. A architecture.md S11.4 lista explicitamente `patient_id` na allowlist -- e uma decisao do Architect, nao um acidente.
+4. Remover exigiria redesenhar a observabilidade (perda de correlacao de log entries por paciente para debugging).
+
+Minha avaliacao:
+- Em termos estritos de LGPD, UUID como dado pseudonimizado nao e dado pessoal sensivel **enquanto nao cruzado** com a tabela de identificacao. A LGPD trata pseudonimizacao como medida de protecao adequada (art. 13 S4).
+- O risco real seria se logs fossem acessiveis publicamente ou a terceiros sem acordo de processamento. Em infraestrutura gerenciada (EasyPanel), os logs sao restritos ao operador.
+- O custo de remover (perda de rastreabilidade por paciente em incidentes) e desproporcional ao risco residual.
+
+**Veredicto: aceito a recusa.** O `patient_id` permanece na allowlist. Se o time quiser enderecar futuramente, a abordagem seria pseudonimizar no log (e.g., HMAC do UUID com chave rotacionavel), nao remover.
+
+### Item 7: Regressoes das 12 alteracoes
+
+**Nenhuma regressao introduzida.**
+
+| Alteracao | Verificacao | Resultado |
+|-----------|------------|-----------|
+| `server-only` em `admin.ts` | `import "server-only"` na linha 1; pacote em `dependencies` | OK |
+| `server-only` em `keys.ts` | `import "server-only"` na linha 1; transitivo para envelope/blind-index | OK |
+| S1: `ASAAS_BASE_URL` em `.env.example` | Nao verificavel (permissao de leitura negada) -- aceito por relato | Aceito |
+| S2: `--destructive-foreground` | Presente em `:root` (linha 93) e `.dark` (linha 150) de `globals.css` | OK |
+| S3: `safeErrorCode` reescrita | Classificacao por keyword, sem raw message; `INTERNAL_ERROR` como fallback | OK |
+| S4: `vi.resetModules()` | `keys.test.ts` usa `vi.resetModules()` no `beforeEach`, imports limpos sem cache-buster | OK |
+| S6: Remocao de `toast.tsx` | Arquivo nao existe; grep por `components/ui/toast` e `@base-ui/react/toast` retorna zero imports orfaos | OK |
+| S7: `--font-mono` | Agora tem font stack explicito: `ui-monospace, SFMono-Regular, Menlo, ...` em vez de `var(--font-geist-mono)` | OK |
+| S8: `getEnvOrThrow()` | Tres clients (`client.ts`, `server.ts`, `middleware.ts`) usam validacao explicita em module scope; zero `process.env.X!` em producao (grep confirma: unicas ocorrencias de `!` sao em comentarios de `keys.ts`) | OK |
+| Vitest alias `server-only` | Alias confinado a `vitest.config.ts`; stub no-op em `src/__tests__/stubs/server-only.ts`; nao alcanca producao (analise completa no Item 2) | OK |
+| 15 componentes shadcn/ui | `toast.tsx` removido, 15 componentes restantes (button, card, input, label, dropdown-menu, skeleton, badge, separator, tabs, table, checkbox, select, textarea, dialog, sheet) -- minimo 15 atendido | OK |
+| Gates reportados | 14/14 testes, `tsc --noEmit` limpo, `npm run build` limpo, 0 Vite warnings | Aceito |
+
+**Nota:** Uma pequena lacuna persiste no `@theme inline`: `--color-destructive-foreground` nao esta mapeado como token Tailwind (apenas a CSS variable existe em `:root`). Isso significa que `text-destructive-foreground` como classe Tailwind nao resolve. Nenhum componente usa essa classe em Sprint 1, e o valor CSS esta disponivel via `text-[var(--destructive-foreground)]` se necessario. Nao e regressao (nunca esteve mapeado) e nao justifica Warning.
+
+## Veredicto Final (Rodada 2)
+
+**APROVADO.** 0 Blockers, 0 Warnings.
+
+W1 esta fechado: `import "server-only"` e primeira linha de `admin.ts` e `keys.ts`, pacote em `dependencies`. O alias no `vitest.config.ts` NAO vaza para producao -- `next build` usa webpack com resolucao independente. 7 Suggestions aplicadas corretamente, sem regressao. S5 recusada com justificativa aceita.
+
+**Pendencias tecnicas remanescentes (nao bloqueiam):**
+- `--color-destructive-foreground` nao mapeado no `@theme inline` (apenas CSS variable existe)
+- `patient_id` na allowlist do logger: decisao arquitetural aceita; reconsiderar se logs forem expostos a terceiros
+
+**Proximo passo:** QA Sprint 1.
