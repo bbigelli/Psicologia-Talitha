@@ -1,9 +1,15 @@
+import "server-only"
+
 /**
  * Encryption key loading and validation.
  *
  * Executed at module initialization — fails loudly on boot if keys are
  * missing, malformed, or not exactly 32 bytes. After loading, removes
  * the env var so the key is only accessible through this module.
+ *
+ * The `server-only` import prevents Client Components from importing
+ * this module — if attempted, the build fails. Without this guard,
+ * the KEK could leak to the browser bundle.
  *
  * NEVER use `process.env.RECORD_ENCRYPTION_KEK_V1!` directly.
  * NEVER use `process.env.CPF_INDEX_KEY!` directly.

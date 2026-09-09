@@ -13,10 +13,19 @@ export default defineConfig({
       RECORD_ENCRYPTION_KEK_V1: TEST_KEK,
       CPF_INDEX_KEY: TEST_CPF_KEY,
     },
+    server: {
+      deps: {
+        // Mock server-only in test environment — the package throws
+        // when imported outside Next.js server context
+        inline: ["server-only"],
+      },
+    },
   },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      // Stub server-only to a no-op in tests
+      "server-only": path.resolve(__dirname, "./src/__tests__/stubs/server-only.ts"),
     },
   },
 })

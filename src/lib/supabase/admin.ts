@@ -1,8 +1,12 @@
+import "server-only"
+
 /**
  * Supabase admin client — bypasses RLS via service_role key.
  *
  * SECURITY: This is the ONLY module that instantiates a service_role client.
  * Importing this module outside the allowlist is grounds for code review rejection.
+ * The `server-only` import above prevents Client Components from importing this
+ * module — a build error is thrown if attempted.
  *
  * Allowlist (architecture.md §6.2):
  * - Patient invite creation (auth.admin.createUser)

@@ -8,7 +8,8 @@
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
   --font-heading: var(--font-sans);
 
   --color-card: var(--card);
@@ -89,6 +90,7 @@
   --ring: hsl(168 30% 38%);
 
   --destructive: hsl(0 65% 52%);
+  --destructive-foreground: hsl(0 0% 100%);
 
   --radius: 0.625rem;
 
@@ -145,6 +147,7 @@
   --ring: hsl(168 32% 52%);
 
   --destructive: hsl(0 60% 55%);
+  --destructive-foreground: hsl(0 0% 100%);
 
   --radius: 0.625rem;
 

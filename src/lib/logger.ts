@@ -72,12 +72,33 @@ export function logError(entry: LogEntry): void {
 }
 
 /**
- * Extract a safe error code from an error without exposing details.
- * Never log the full error object — only the code.
+ * Extract a safe, generic error classification without exposing details.
+ *
+ * Returns a category string — never the error message itself, which could
+ * contain table names, column names, query fragments, or clinical data.
  */
 export function safeErrorCode(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message.slice(0, 50)
+  if (!(error instanceof Error)) {
+    return "UNKNOWN_ERROR"
   }
-  return "UNKNOWN_ERROR"
+
+  const msg = error.message.toLowerCase()
+
+  if (msg.includes("timeout") || msg.includes("econnrefused")) {
+    return "NETWORK_ERROR"
+  }
+  if (msg.includes("permission") || msg.includes("unauthorized")) {
+    return "AUTH_ERROR"
+  }
+  if (msg.includes("duplicate") || msg.includes("unique")) {
+    return "DUPLICATE_ERROR"
+  }
+  if (msg.includes("not found") || msg.includes("no rows")) {
+    return "NOT_FOUND"
+  }
+  if (msg.includes("validation") || msg.includes("invalid")) {
+    return "VALIDATION_ERROR"
+  }
+
+  return "INTERNAL_ERROR"
 }
