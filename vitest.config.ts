@@ -8,11 +8,17 @@ const TEST_KEK = Buffer.alloc(32, 0xaa).toString("base64")
 const TEST_CPF_KEY = Buffer.alloc(32, 0xbb).toString("base64")
 
 /**
- * Load NEXT_PUBLIC_* variables from .env.local for integration tests.
- * These are publishable keys (designed for browser exposure), but we
- * load them from .env.local (git-ignored) rather than hardcoding.
+ * Load variables from .env.local for integration tests.
+ * - NEXT_PUBLIC_*: publishable keys for anon client tests
+ * - SUPABASE_SERVICE_ROLE_KEY: for F3 validation (audit_log write)
+ *
+ * All loaded from .env.local (git-ignored), never hardcoded.
  */
-function loadPublicEnvVars(): Record<string, string> {
+const ALLOWED_ENV_KEYS = new Set([
+  "SUPABASE_SERVICE_ROLE_KEY",
+])
+
+function loadTestEnvVars(): Record<string, string> {
   const envPath = path.resolve(__dirname, ".env.local")
   if (!existsSync(envPath)) return {}
   const content = readFileSync(envPath, "utf-8")
@@ -24,7 +30,7 @@ function loadPublicEnvVars(): Record<string, string> {
     if (eqIdx < 0) continue
     const key = trimmed.slice(0, eqIdx).trim()
     const val = trimmed.slice(eqIdx + 1).trim()
-    if (key.startsWith("NEXT_PUBLIC_")) {
+    if (key.startsWith("NEXT_PUBLIC_") || ALLOWED_ENV_KEYS.has(key)) {
       vars[key] = val
     }
   }
@@ -35,7 +41,7 @@ export default defineConfig({
   test: {
     environment: "node",
     env: {
-      ...loadPublicEnvVars(),
+      ...loadTestEnvVars(),
       // Override crypto keys with deterministic test values — never real keys
       RECORD_ENCRYPTION_KEK_V1: TEST_KEK,
       CPF_INDEX_KEY: TEST_CPF_KEY,

@@ -5,31 +5,35 @@
  * publishable key (no session, no JWT). They prove that without
  * authentication, EVERY table and RPC is inaccessible.
  *
- * This is the highest-value test in Sprint 1: if any of these pass
- * when they should fail, it means patient data is exposed to the
- * public internet.
+ * Round 2 (post-patch): migration 20260909121200 applied:
+ * - F1: 8 RPCs rewritten with IS DISTINCT FROM and NULL gates
+ * - F2: REVOKE FROM PUBLIC + explicit GRANT to allowed roles
+ * - F3: extensions.digest() schema-qualified in trigger and RPCs
  *
- * FINDINGS discovered during test execution:
- * - REVOKE EXECUTE FROM anon is ineffective for ALL RPCs. All functions
- *   are callable by anon. Protection relies on internal auth checks.
- *   Likely caused by Supabase ALTER DEFAULT PRIVILEGES re-granting.
- * - fn_verify_audit_chain has a NULL-safety bug in role check:
- *   `IF v_role != 'psychologist'` evaluates to NULL when auth.uid()
- *   is NULL, so the exception is never raised.
+ * Assertions now expect 42501 (permission denied at privilege level),
+ * not P0001 (internal checks). The distinction matters: 42501 means
+ * the function never executes; P0001 means it executed and caught
+ * the issue internally.
  *
  * RULES:
- * - NEVER use service_role key (it bypasses RLS — the test proves nothing)
+ * - NEVER use service_role key in RLS/permission tests
+ * - service_role used ONLY in F3 validation (audit_log write), declared explicitly
  * - NEVER print credentials, tokens, or data in assertions
  * - NEVER insert real data; every INSERT expects FAILURE
- * - These tests require network access to the Supabase instance
  */
 import { describe, it, expect, beforeAll } from "vitest"
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
 
 const canRun = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY)
+// service_role key must be a JWT (starts with eyJ) — the sb_secret_* format
+// is a management API key, not a PostgREST key, and returns "Unregistered API key"
+const hasServiceRole = Boolean(
+  SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY && SUPABASE_SERVICE_ROLE_KEY.startsWith("eyJ"),
+)
 
 describe.skipIf(!canRun)(
   "RLS enforcement — anonymous client (no session)",
@@ -67,12 +71,9 @@ describe.skipIf(!canRun)(
       it(`SELECT on ${table} should return empty or error (never data)`, async () => {
         const { data, error } = await anon.from(table).select("id").limit(1)
 
-        // Either: RLS filters all rows (data=[]) or permission error
         if (error) {
-          // Permission denied is acceptable — means access was blocked
           expect(error.code).toBeTruthy()
         } else {
-          // No error but data must be empty — RLS filtered everything
           expect(data).toEqual([])
         }
       })
@@ -146,7 +147,7 @@ describe.skipIf(!canRun)(
     })
 
     // ================================================================
-    // UPDATE on sessions — must fail (explicit REVOKE UPDATE from anon)
+    // UPDATE/DELETE on protected tables
     // ================================================================
 
     it("UPDATE on sessions should fail (REVOKE UPDATE from anon per ADR-0002)", async () => {
@@ -157,10 +158,6 @@ describe.skipIf(!canRun)(
 
       expect(error).toBeTruthy()
     })
-
-    // ================================================================
-    // UPDATE/DELETE on audit_log — must fail (REVOKE from all roles)
-    // ================================================================
 
     it("UPDATE on audit_log should fail (REVOKE UPDATE from all roles)", async () => {
       const { error } = await anon
@@ -180,34 +177,19 @@ describe.skipIf(!canRun)(
       expect(error).toBeTruthy()
     })
 
-    // ================================================================
-    // UPDATE/DELETE on consents
-    //
-    // NOTE: With no rows matching the target UUID, Supabase returns
-    // 204 No Content (0 rows affected, no error). This is correct
-    // Postgres behavior — the protection comes from:
-    // 1. No UPDATE/DELETE RLS policy for anon (blocks real rows)
-    // 2. Append-only triggers (fn_block_consents_update/delete)
-    // 3. REVOKE UPDATE/DELETE from service_role
-    //
-    // The triggers only fire when a row actually matches. With no
-    // matching rows, there is nothing to protect.
-    // ================================================================
-
-    it("UPDATE on consents with non-existent id yields 0 affected rows (no RLS error on empty)", async () => {
+    // consents UPDATE/DELETE on non-existent rows: 204 No Content (0 affected)
+    // Real rows protected by RLS + append-only triggers + REVOKE from service_role
+    it("UPDATE on consents with non-existent id yields 0 affected rows", async () => {
       const { data, error, status } = await anon
         .from("consents")
         .update({ action: "revoke" })
         .eq("id", "00000000-0000-0000-0000-000000000000")
 
-      // Either error (if Supabase enforces at privilege level)
-      // OR 204 No Content with null data (0 rows matched, no trigger fired)
-      // Both are acceptable — real rows would be blocked by RLS + triggers
       const isBlocked = error !== null || data === null || status === 204
       expect(isBlocked).toBe(true)
     })
 
-    it("DELETE on consents with non-existent id yields 0 affected rows (no RLS error on empty)", async () => {
+    it("DELETE on consents with non-existent id yields 0 affected rows", async () => {
       const { data, error, status } = await anon
         .from("consents")
         .delete()
@@ -218,18 +200,14 @@ describe.skipIf(!canRun)(
     })
 
     // ================================================================
-    // RPC functions — REVOKE EXECUTE from anon (B1 patch)
+    // RPC functions — REVOKE FROM PUBLIC (F2 patch applied)
     //
-    // FINDING: REVOKE EXECUTE FROM anon is NOT EFFECTIVE. All RPCs
-    // are callable by anon. The errors returned are P0001 (internal
-    // auth checks inside the function), NOT 42501 (permission denied).
-    // Supabase's ALTER DEFAULT PRIVILEGES likely re-grants EXECUTE.
-    //
-    // Despite the REVOKE being ineffective, all RPCs except
-    // fn_verify_audit_chain are protected by internal checks.
+    // Post-patch: all RPCs now return 42501 (permission denied) for anon.
+    // This is the CORRECT behavior — the function never executes.
+    // Pre-patch: errors were P0001 (internal checks after execution).
     // ================================================================
 
-    const rpcsWithInternalChecks = [
+    const allRpcs = [
       {
         name: "log_audit",
         params: {
@@ -239,87 +217,61 @@ describe.skipIf(!canRun)(
       },
       {
         name: "enter_waiting_room",
-        params: {
-          p_session_id: "00000000-0000-0000-0000-000000000000",
-        },
+        params: { p_session_id: "00000000-0000-0000-0000-000000000000" },
       },
       {
         name: "admit_patient",
-        params: {
-          p_session_id: "00000000-0000-0000-0000-000000000000",
-        },
+        params: { p_session_id: "00000000-0000-0000-0000-000000000000" },
       },
       {
         name: "cancel_session",
-        params: {
-          p_session_id: "00000000-0000-0000-0000-000000000000",
-        },
+        params: { p_session_id: "00000000-0000-0000-0000-000000000000" },
       },
       {
         name: "consume_email_token",
+        params: { p_token_hash: "fake_hash", p_expected_purpose: "confirm" },
+      },
+      {
+        name: "fn_verify_audit_chain",
+        params: {},
+      },
+      {
+        name: "log_audit_system",
         params: {
-          p_token_hash: "fake_hash",
-          p_expected_purpose: "confirm_session",
+          p_actor_id: "00000000-0000-0000-0000-000000000000",
+          p_actor_source: "anonymous",
+          p_patient_id: "00000000-0000-0000-0000-000000000000",
+          p_action: "TEST",
         },
       },
     ]
 
-    for (const rpc of rpcsWithInternalChecks) {
-      it(`RPC ${rpc.name} should fail for anon (internal auth check catches it)`, async () => {
+    for (const rpc of allRpcs) {
+      it(`RPC ${rpc.name} should return 42501 permission denied for anon`, async () => {
         const { error } = await anon.rpc(rpc.name, rpc.params)
 
-        // Error comes from internal checks (P0001), NOT from REVOKE (42501)
         expect(error).toBeTruthy()
-        expect(error!.message).toBeTruthy()
+        // Must be 42501 (permission denied at privilege level), proving
+        // the function never executes — not P0001 (internal check)
+        expect(error!.code).toBe("42501")
       })
     }
 
     // ================================================================
-    // FINDING: fn_verify_audit_chain NULL-safety bug
-    //
-    // When called as anon (auth.uid() = NULL):
-    // 1. v_uid := auth.uid() → NULL
-    // 2. SELECT role INTO v_role FROM profiles WHERE id = NULL → v_role = NULL
-    // 3. IF v_role != 'psychologist' → NULL != 'psychologist' → NULL
-    // 4. PL/pgSQL treats NULL as FALSE → exception NOT raised
-    // 5. Function executes and returns audit chain status
-    //
-    // FIX NEEDED: IF v_uid IS NULL OR v_role IS DISTINCT FROM 'psychologist'
+    // V15: fn_verify_audit_chain specifically blocked for anon
+    // (data-architecture.md v1.3)
     // ================================================================
 
-    it("FINDING: fn_verify_audit_chain executes as anon due to NULL-safety bug", async () => {
-      const { data, error } = await anon.rpc("fn_verify_audit_chain", {})
-
-      // BUG: function should fail but succeeds due to NULL role check
-      // This test documents the current (broken) behavior
-      expect(error).toBeNull()
-      expect(data).toBeTruthy()
-      // The function returns audit metadata — this should NOT be accessible to anon
-      expect(Array.isArray(data)).toBe(true)
-      if (Array.isArray(data) && data.length > 0) {
-        // Verify it returned the expected shape (proving it really executed)
-        expect(data[0]).toHaveProperty("total_entries")
-        expect(data[0]).toHaveProperty("is_valid")
-      }
-    })
-
-    // ================================================================
-    // log_audit_system — should fail for anon
-    // ================================================================
-
-    it("RPC log_audit_system should fail for anon", async () => {
-      const { error } = await anon.rpc("log_audit_system", {
-        p_actor_id: "00000000-0000-0000-0000-000000000000",
-        p_actor_source: "anonymous",
-        p_patient_id: "00000000-0000-0000-0000-000000000000",
-        p_action: "TEST",
-      })
+    it("V15: fn_verify_audit_chain denied for anon with 42501", async () => {
+      const { error } = await anon.rpc("fn_verify_audit_chain", {})
 
       expect(error).toBeTruthy()
+      expect(error!.code).toBe("42501")
+      expect(error!.message).toContain("permission denied")
     })
 
     // ================================================================
-    // Tables with NO policies for authenticated — doubly locked for anon
+    // Tables with NO policies — doubly locked for anon
     // ================================================================
 
     it("SELECT on payment_webhook_events should return empty (no policies)", async () => {
@@ -360,6 +312,75 @@ describe.skipIf(!canRun)(
         expect(data).toEqual([])
       }
     })
+  },
+)
+
+// ================================================================
+// F3 + V16: audit_log write and hash chain verification
+//
+// Uses service_role EXPLICITLY — this is the only section that does.
+// Reason: no authenticated users exist yet (auth is Sprint 2), so
+// the only way to test audit_log write is via log_audit_system which
+// requires service_role.
+//
+// NOTE: This inserts a REAL, PERMANENT entry in audit_log. The table
+// is append-only (DELETE/UPDATE revoked from all roles including
+// service_role). The entry has action='QA_SPRINT_1_HASH_CHAIN_TEST'
+// and actor_source='cron' to make it identifiable.
+// ================================================================
+
+describe.skipIf(!hasServiceRole)(
+  "F3 + V16: audit_log write and hash chain (service_role — declared)",
+  () => {
+    let admin: SupabaseClient
+
+    beforeAll(() => {
+      admin = createClient(SUPABASE_URL!, SUPABASE_SERVICE_ROLE_KEY!, {
+        auth: { autoRefreshToken: false, persistSession: false },
+      })
+    })
+
+    it("F3: log_audit_system should write to audit_log with hash chain", async () => {
+      const { data: logId, error } = await admin.rpc("log_audit_system", {
+        p_actor_id: "00000000-0000-0000-0000-000000000001",
+        p_actor_source: "cron",
+        p_patient_id: null,
+        p_action: "QA_SPRINT_1_HASH_CHAIN_TEST",
+      })
+
+      expect(error).toBeNull()
+      expect(logId).toBeTruthy()
+
+      // Verify the entry was written with hash chain fields
+      const { data: entry, error: readErr } = await admin
+        .from("audit_log")
+        .select("id, action, row_hash, prev_hash, actor_source")
+        .eq("id", logId)
+        .single()
+
+      expect(readErr).toBeNull()
+      expect(entry).toBeTruthy()
+      expect(entry!.action).toBe("QA_SPRINT_1_HASH_CHAIN_TEST")
+      expect(entry!.row_hash).toBeTruthy() // hash chain trigger fired and produced a hash
+      expect(entry!.actor_source).toBe("cron")
+    })
+
+    it("V16: fn_verify_audit_chain confirms hash chain integrity (service_role)", async () => {
+      const { data, error } = await admin.rpc("fn_verify_audit_chain", {})
+
+      expect(error).toBeNull()
+      expect(data).toBeTruthy()
+      expect(Array.isArray(data)).toBe(true)
+      if (Array.isArray(data) && data.length > 0) {
+        expect(data[0].total_entries).toBeGreaterThanOrEqual(1)
+        expect(data[0].is_valid).toBe(true)
+        expect(data[0].total_entries).toBe(data[0].valid_entries)
+      }
+    })
+
+    // V11 regression: log_audit_system must deny authenticated
+    // (service_role only). We cannot test "as authenticated" without
+    // a real auth user (Sprint 2). Documented as limitation.
   },
 )
 
