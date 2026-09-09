@@ -13,6 +13,19 @@ Plataforma web para psicologa que atende exclusivamente online, substituindo fer
 
 ---
 
+---
+
+## ⚠️ EMENDAS DO DESENVOLVEDOR (2026-09-09) — PRECEDÊNCIA SOBRE O RESTO DESTE DOCUMENTO
+
+Decisões tomadas pelo dev após o Security Review do PRD. **Sobrescrevem qualquer trecho em conflito abaixo.** Agentes downstream (Design, Architect, Data Architect, Backlog) devem seguir estas emendas, não o texto original.
+
+| # | Emenda | Efeito prático |
+|---|--------|----------------|
+| **E1** | **A Talitha não atende pacientes menores de 18 anos** — nem no MVP, nem em versão futura. | **Persona 3 (Responsável Legal) está removida do produto.** O cadastro de paciente valida idade ≥ 18 e bloqueia menores com mensagem clara. Retenção de prontuário é **fixa em 5 anos** — a regra CFP de 20 anos não se aplica e **não deve ser modelada** no schema. Recibo IRPF sempre no CPF do próprio paciente. Não existe fluxo de aceite de responsável legal. **Resolve o issue Crítico C1 do Security Review.** |
+| **E2** | **MFA TOTP é obrigatório para a psicóloga.** | Confirma a recomendação do Security Review contra a decisão original do PO. A conta dela dá acesso ao prontuário de todos os pacientes — senha isolada não é defensável perante o CRP em caso de invasão. MFA para paciente fica fora do MVP. |
+| **E3** | Lembretes anti-no-show por **e-mail** no MVP. | WhatsApp Cloud API reavaliada em v1.1 conforme taxa de abertura real. |
+| **E4** | **Landing page pública fora do MVP.** | Entra como sprint complementar depois que o app estiver operando. |
+
 ## Problema
 
 **O que esta acontecendo hoje que e ruim:**
@@ -56,7 +69,7 @@ A psicologa Talitha atende exclusivamente online e opera sem nenhum sistema inte
 - **Dores atuais:** Recebe link por WhatsApp e as vezes perde; nao sabe se esta em dia com pagamentos; nao tem acesso facil a recibos; experiencia de sessao varia conforme a ferramenta usada.
 - **Ganhos esperados:** Portal proprio com proximas sessoes, historico de pagamentos e recibos; acesso a sala com 2 cliques; lembretes automaticos com link direto; pagamento simples por PIX/boleto/cartao.
 
-### Persona 3 — Responsavel Legal (Pai/Mae de Paciente Menor)
+### ~~Persona 3 — Responsavel Legal~~ — **REMOVIDA pela Emenda E1.** O app nao atende menores de 18 anos. Todo o conteudo desta secao e historico e nao deve ser implementado.
 
 - **Perfil:** Pai ou mae de paciente menor de idade em acompanhamento. E quem autoriza o tratamento, paga as sessoes e precisa dos recibos no proprio CPF para deducao no IR.
 - **Job:** Quando meu filho esta em atendimento, quero acompanhar os agendamentos e pagamentos, e receber os recibos no meu CPF, para organizar a rotina familiar e declarar no Imposto de Renda.
@@ -295,7 +308,7 @@ Termos/LGPD         Cancelar c/ prazo                   Anotacoes lat.    Audit 
 | Tipo de paciente | Retencao minima | Contagem a partir de |
 |-----------------|-----------------|---------------------|
 | Adulto (>=18 anos no inicio) | 5 anos | Data de encerramento do atendimento |
-| Menor de idade (<18 anos no inicio) | 20 anos | Data de encerramento do atendimento |
+| ~~Menor de idade~~ | **N/A** | **REMOVIDO pela Emenda E1** — o app bloqueia cadastro de menores de 18 anos |
 
 - Prontuario nunca sofre DELETE fisico durante o periodo de retencao — apenas soft delete (`deleted_at`).
 - Apos o periodo de retencao, a eliminacao pode ocorrer (manual ou automatizada).

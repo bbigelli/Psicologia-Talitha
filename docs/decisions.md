@@ -65,3 +65,23 @@ Registro de decisões de produto, arquitetura e técnicas. Ver `~/.claude/CLAUDE
 - **Export LGPD não inclui conteúdo clínico** — o titular acessa seus dados cadastrais, financeiros e de agenda; evolução clínica é compartilhada apenas a critério profissional.
 - **Tom dos e-mails de cobrança respeitoso, nunca agressivo** — contexto de saúde mental.
 **Escopo:** Produto e permissões.
+
+### [2026-09-09] Talitha não atende pacientes menores de 18 anos
+**Contexto:** O Security Review classificou como **Crítico (C1)** o consentimento de menor sendo coletado do próprio menor — violação do art. 14 da LGPD e do CFP, o que invalidaria a base legal de todo o tratamento clínico daquele paciente.
+**Decisão:** A prática é exclusivamente adulta, de forma permanente. Cadastro valida idade ≥ 18 e bloqueia menores.
+**Efeitos:** Persona "Responsável Legal" removida do produto; retenção de prontuário fixa em **5 anos** (a regra CFP de 20 anos não é modelada); recibo IRPF sempre no CPF do próprio paciente; nenhum fluxo de aceite de responsável legal. Resolve C1 e remove a complexidade de retenção variável do schema.
+**Escopo:** Cadastro de paciente, consentimento, prontuário, recibos, modelo de dados.
+
+### [2026-09-09] MFA TOTP obrigatório para a psicóloga
+**Contexto:** O PO havia deixado MFA fora do MVP; o Security Review contrariou e tornou obrigatório.
+**Decisão:** MFA TOTP obrigatório para o perfil `psychologist`. MFA para paciente fica fora do MVP.
+**Motivo:** A conta da psicóloga dá acesso ao prontuário de todos os pacientes — é a chave do cofre. Senha isolada não é posição defensável perante o CRP em caso de invasão. Custo aceito: configuração única de app autenticador + 6 dígitos no login.
+**Escopo:** Autenticação.
+
+### [2026-09-09] Criptografia de prontuário: envelope AES-256-GCM com KEK fora do Supabase
+**Contexto:** O PO deixou a abordagem aberta; o Security Review avaliou três caminhos.
+**Decisão:** AES-256-GCM application-level, envelope DEK/KEK, AAD = `patient_id|record_id`, **KEK em variável de ambiente do EasyPanel** (fora do Supabase), rota com `runtime='nodejs'`.
+**Motivo:** Com `pgcrypto` ou Supabase Vault, um único vazamento de `SUPABASE_SERVICE_ROLE_KEY` expõe todo o prontuário em claro — a chave ficaria no mesmo domínio de confiança do dado, anulando o próprio requisito.
+**Impacto aceito:** Busca no histórico de evoluções vira decrypt-then-filter, sem índice em plaintext.
+**Alternativas descartadas:** `pgcrypto` (chave vaza em logs e `pg_stat_statements`); Vault para conteúdo clínico (root key no mesmo provedor).
+**Escopo:** Prontuário. Mover a KEK para `supabase secrets` "por simplicidade" é motivo de reprovação em code review.
