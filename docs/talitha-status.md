@@ -1,45 +1,43 @@
 # Status: talitha-psicologia
-## Fase atual: Planejamento -- Security Review (schema) APROVADO, proximo passo Backlog
-## Ultimo agente: Security Agent (re-verificacao rodada 2)
+## Fase atual: Planejamento CONCLUÍDO — próximo passo: execução da Sprint 1
+## Último agente: Backlog Agent
 ## Branch: feature/planning-docs
 
 ### Planejamento
-- Decisoes de stack e escopo: OK (docs/decisions.md)
+- Decisões de stack e escopo: OK (docs/decisions.md)
 - PO / PRD + stories: OK (docs/talitha-prd.md + docs/talitha-user-stories.md)
 - Security Review (PRD): OK (docs/talitha-security-review-prd.md)
 - Design & UI: OK (docs/talitha-design-system.md + docs/talitha-wireframes.md + docs/talitha-navigation-flow.md)
 - System Architect: OK v1.1 (docs/talitha-architecture.md + docs/adr/ + CLAUDE.md)
-- Security Review (arquitetura): APROVADA -- 8/8 correcoes fechadas
+- Security Review (arquitetura): APROVADA — 8/8 correções fechadas
 - Data Architect: OK v1.1 (docs/talitha-data-architecture.md + supabase/migrations/)
-  - v1.0: 19 tabelas, 32 requisitos (28 impl, 4 parciais)
-  - v1.1: patches A1-A4, M1, B1-B2, R19 aplicados; emendas E5-E8; 20 tabelas; 4 parciais fechados
-- Security Review (schema): **APROVADO** -- rodada 2 concluida <- CONCLUIDO
-  - v1.0: Aprovado com ressalvas (4 Altos, 2 Medios, 5 Baixos)
-  - v1.1: 9/9 patches Fechados, 32/32 requisitos completos, E5/E6/E8 corretas, 1 regressao funcional (N1 Medio, falha segura), 4 recusas aceitaveis, 4 DoDs para o Backlog
-- Backlog: -- pendente <- PROXIMO PASSO
+- Security Review (schema): APROVADO — 9/9 patches, 32/32 requisitos, 4 DoDs para o Backlog
+- Backlog: **CONCLUÍDO** (docs/talitha-backlog.md) ✅
 
-### Resultado da Re-verificacao Security (rodada 2)
+### Backlog — Resumo
+- **8 sprints**, **54 tasks**, **36 stories cobertas** (nenhuma órfã)
+- Sprint 1: Fundação (setup, migrations, crypto, logger, wrappers)
+- Sprint 2: Autenticação & MFA (login, TOTP, middleware, onboarding)
+- Sprint 3: Pacientes & Consentimento (cadastro, convite, termos, portal)
+- Sprint 4: Agenda & Lembretes (recorrência, conflito, email reminders)
+- Sprint 5: Financeiro & Asaas (cobranças, webhook, régua, inadimplentes)
+- Sprint 6: Sala de Vídeo & LiveKit (espera, admissão, vídeo, Gate 5.5)
+- Sprint 7: Prontuário & Registros Clínicos (evolução, anamnese, E6, audit log)
+- Sprint 8: Dashboard, Recibos & Finalização (KPIs, PDF, LGPD, hardening)
 
-- **Patches:** 9/9 Fechados (A1, A2, A3, A4, M1, B1, B2, R19, consume_email_token)
-- **Requisitos parciais:** 4/4 agora Completos (R11, R12, R14, R19)
-- **Emendas:** E5 (e-Psi removido), E6 (remote_viability_assessments com rigor clinico), E8 (sem vedacoes)
-- **Regressoes de seguranca:** 0
-- **Regressoes funcionais:** 1 (N1 -- fn_block_delete_during_retention referencia OLD.treatment_ended_at em tabelas sem essa coluna; falha segura)
-- **Recusas aceitas:** M2 (VIEW_RECORD transacional), B3 (texto livre), B4 (single-tenant), B5 (contagem RPCs)
-- **DoDs para o Backlog:** DoD-1 (VIEW_RECORD transacional), DoD-2 (sanitizacao campos operacionais), DoD-3 (fix fn_block_delete_during_retention), DoD-4 (verificacao column-level GRANT em provisionamento)
+### DoDs do Security Review incorporados
+- DoD-1 (VIEW_RECORD transacional): Sprint 7, Task 7.3
+- DoD-2 (Sanitização campos operacionais): Sprint 4, Task 4.4
+- DoD-3 (Fix fn_block_delete_during_retention): Sprint 1, Task 1.4 (verificação)
+- DoD-4 (Column-level GRANT): Sprint 1, Task 1.4
 
-### Blockers
-- Migrations pendentes de aplicacao (orquestrador aplica)
-- GitHub CLI nao instalado
-- Credenciais Asaas Sandbox nao fornecidas
-- Credenciais LiveKit Cloud nao fornecidas
-- Custodia da KEK nao definida
-- DNS (SPF/DKIM/DMARC) pendente
-- 2FA na conta EasyPanel
-- Regiao do LiveKit Cloud a confirmar
-- Duas chaves Resend a criar
+### Blockers (herdados — não resolvidos pelo Backlog)
+- Migrations pendentes de aplicação (Sprint 1, Task 1.4)
+- GitHub CLI não instalado
+- DNS (SPF/DKIM/DMARC) pendente — pré-requisito de deploy, não de sprint
+- 2FA na conta EasyPanel — pré-requisito de deploy
+- Região do LiveKit Cloud a confirmar
 - Ambiente de teste dedicado
-- Versao minima do Next.js a fixar
 
-### Proximo passo
-Ativar **Backlog**. Todas as fases de planejamento concluidas: PRD, Design, Arquitetura, Data Architecture, 3 Security Reviews (todos aprovados). O Backlog recebe como entrada todos os docs/ gerados e deve incorporar os 4 DoDs do Security Review (docs/talitha-security-review-schema.md secao 6.6).
+### Próximo passo
+**OBRIGATÓRIO: `/gp import-backlog docs/talitha-backlog.md --feature "Talitha Psicologia" --apply`** — importar as 8 sprints para a plataforma Gestão Financeira antes de qualquer execução técnica. Após import, iniciar Sprint 1 via `/gp next`.
