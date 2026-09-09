@@ -1,5 +1,9 @@
 -- Migration: Core tables (profiles, patients)
 -- Talitha Psicologia
+--
+-- Patches applied:
+--   E5: removed epsi_status column (e-Psi desativado, Res. CFP 09/2024)
+--   A2: auto-calculate retention_until + safer fn_block_delete_during_retention
 
 -- ============================================================
 -- profiles
@@ -15,10 +19,9 @@ CREATE TABLE profiles (
   email                   TEXT NOT NULL,
   phone                   TEXT,
 
-  -- Psychologist-specific
+  -- Psychologist-specific (E5: epsi_status removed — platform deactivated 2024-08-31)
   crp                     TEXT,
   crp_region              TEXT,
-  epsi_status             TEXT CHECK (epsi_status IS NULL OR epsi_status IN ('active', 'pending')),
   specialty               TEXT,
   default_session_value   NUMERIC(10, 2),
   cancellation_policy_hours INT DEFAULT 24,
@@ -91,10 +94,47 @@ CREATE TRIGGER trg_patients_updated_at
   BEFORE UPDATE ON patients
   FOR EACH ROW EXECUTE FUNCTION fn_update_timestamp();
 
--- Block physical DELETE during retention period
+-- ============================================================
+-- A2: Auto-calculate retention_until when treatment_ended_at is set
+-- Prevents the application from "forgetting" to set it, which
+-- would leave retention_until NULL and the DELETE trigger inert.
+-- Also prevents manual reduction of retention_until.
+-- ============================================================
+CREATE OR REPLACE FUNCTION fn_patients_set_retention()
+RETURNS TRIGGER AS $$
+BEGIN
+  -- Auto-calculate when treatment ends
+  IF NEW.treatment_ended_at IS NOT NULL AND OLD.treatment_ended_at IS NULL THEN
+    NEW.retention_until := NEW.treatment_ended_at + interval '5 years';
+  END IF;
+  -- Prevent manual reduction of retention_until
+  IF OLD.retention_until IS NOT NULL
+     AND NEW.retention_until IS DISTINCT FROM OLD.retention_until
+     AND NEW.retention_until < OLD.retention_until THEN
+    RAISE EXCEPTION 'Cannot reduce retention_until (was %, attempted %)',
+      OLD.retention_until, NEW.retention_until;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_patients_set_retention
+  BEFORE UPDATE ON patients
+  FOR EACH ROW EXECUTE FUNCTION fn_patients_set_retention();
+
+-- ============================================================
+-- A2: Safer fn_block_delete_during_retention
+-- Now also blocks DELETE when treatment ended but retention_until
+-- was not calculated (safety net for edge cases).
+-- ============================================================
 CREATE OR REPLACE FUNCTION fn_block_delete_during_retention()
 RETURNS TRIGGER AS $$
 BEGIN
+  -- If treatment ended but retention_until not set, block as safety net
+  IF OLD.retention_until IS NULL AND OLD.treatment_ended_at IS NOT NULL THEN
+    RAISE EXCEPTION 'retention_until not set after treatment end — cannot delete safely';
+  END IF;
+  -- Block during active retention period
   IF OLD.retention_until IS NOT NULL AND OLD.retention_until > now() THEN
     RAISE EXCEPTION 'Cannot delete record during retention period (until %)', OLD.retention_until;
   END IF;

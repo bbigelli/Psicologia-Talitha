@@ -1,10 +1,17 @@
 -- Migration: Compliance tables
 -- Talitha Psicologia
+--
+-- Patches applied:
+--   A3: consents append-only triggers + FORCE RLS + REVOKE (closes R11)
 
 -- ============================================================
 -- consents
 -- Purpose: append-only consent records (Requirement 11).
 -- Immutable. All timestamps in timestamptz UTC.
+-- E7: consent text accommodates format online, faltas, queda
+--   via consent_text_hash + consent_version — when text changes
+--   (adding E7 clauses), version increments and patients re-accept.
+--   No schema change needed.
 -- LGPD classification: D9 (Confidencial - proof of compliance)
 -- Retention: same as patient record (5 years)
 -- ============================================================
@@ -13,7 +20,7 @@ CREATE TABLE consents (
   patient_id              UUID NOT NULL REFERENCES patients(id) ON DELETE RESTRICT,
 
   purpose                 TEXT NOT NULL CHECK (purpose IN (
-                            'online_therapy',    -- CFP term
+                            'online_therapy',    -- CFP term (Res. 09/2024)
                             'lgpd_clinical',     -- LGPD main consent
                             'lgpd_asaas',        -- data sharing with Asaas
                             'communication'      -- optional email reminders
@@ -30,6 +37,22 @@ CREATE TABLE consents (
 );
 
 ALTER TABLE consents ENABLE ROW LEVEL SECURITY;
+-- A3: FORCE ensures even the table owner respects policies
+ALTER TABLE consents FORCE ROW LEVEL SECURITY;
+
+-- A3: append-only enforcement (same rigor as audit_log)
+-- fn_block_append_only_mutation is created in 120300_clinical_tables.sql
+CREATE TRIGGER trg_consents_no_update
+  BEFORE UPDATE ON consents
+  FOR EACH ROW EXECUTE FUNCTION fn_block_append_only_mutation();
+
+CREATE TRIGGER trg_consents_no_delete
+  BEFORE DELETE ON consents
+  FOR EACH ROW EXECUTE FUNCTION fn_block_append_only_mutation();
+
+CREATE TRIGGER trg_consents_no_truncate
+  BEFORE TRUNCATE ON consents
+  FOR EACH STATEMENT EXECUTE FUNCTION fn_block_append_only_mutation();
 
 -- ============================================================
 -- communication_preferences
@@ -87,7 +110,7 @@ CREATE TABLE email_action_tokens (
 
 ALTER TABLE email_action_tokens ENABLE ROW LEVEL SECURITY;
 -- Explicitly: NO policies for authenticated or anon.
--- Access only via SECURITY DEFINER RPCs.
+-- Access only via SECURITY DEFINER RPCs (consume_email_token).
 
 -- ============================================================
 -- data_subject_requests

@@ -1,6 +1,20 @@
 -- Migration: Clinical tables
 -- Talitha Psicologia
 -- All clinical content uses envelope encryption (7 columns per table)
+--
+-- Patches applied:
+--   M1: clinical_record_versions append-only triggers (closes R12)
+--   E6: remote_viability_assessments table (Res. CFP 09/2024)
+
+-- ============================================================
+-- Generic append-only blocker (reused by consents, versions, viability)
+-- ============================================================
+CREATE OR REPLACE FUNCTION fn_block_append_only_mutation()
+RETURNS TRIGGER AS $$
+BEGIN
+  RAISE EXCEPTION '% is append-only (compliance record): % is not permitted', TG_TABLE_NAME, TG_OP;
+END;
+$$ LANGUAGE plpgsql;
 
 -- ============================================================
 -- clinical_records
@@ -77,6 +91,15 @@ CREATE TABLE clinical_record_versions (
 );
 
 ALTER TABLE clinical_record_versions ENABLE ROW LEVEL SECURITY;
+
+-- M1: append-only enforcement for clinical_record_versions
+CREATE TRIGGER trg_clinical_record_versions_no_update
+  BEFORE UPDATE ON clinical_record_versions
+  FOR EACH ROW EXECUTE FUNCTION fn_block_append_only_mutation();
+
+CREATE TRIGGER trg_clinical_record_versions_no_delete
+  BEFORE DELETE ON clinical_record_versions
+  FOR EACH ROW EXECUTE FUNCTION fn_block_append_only_mutation();
 
 -- ============================================================
 -- anamnesis
@@ -155,3 +178,58 @@ ALTER TABLE session_note_drafts ENABLE ROW LEVEL SECURITY;
 CREATE TRIGGER trg_session_note_drafts_updated_at
   BEFORE UPDATE ON session_note_drafts
   FOR EACH ROW EXECUTE FUNCTION fn_update_timestamp();
+
+-- ============================================================
+-- E6: remote_viability_assessments
+-- Purpose: Res. CFP 09/2024 requires the psychologist to record
+-- her assessment of whether the patient is suitable for remote
+-- therapy, with date and justification, in the clinical record.
+-- This is the document that protects the psychologist before the
+-- CRP — treated with the same rigor as the clinical record.
+--
+-- Modeled as a SEPARATE TABLE (not extension of clinical_records)
+-- because:
+-- 1. Different lifecycle: one per patient, versionable (not per session)
+-- 2. Append-only independently — mixing with clinical_records would
+--    require a nullable session_id or discriminator, weakening the model
+-- 3. Its own RLS and retention, same pattern as clinical_records
+--
+-- LGPD classification: D1 (Sensivel-LGPD — clinical content)
+-- Retention: 5 years (same as clinical records)
+-- ============================================================
+CREATE TABLE remote_viability_assessments (
+  id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  patient_id              UUID NOT NULL REFERENCES patients(id) ON DELETE RESTRICT,
+  psychologist_id         UUID NOT NULL REFERENCES profiles(id),
+  version_number          INT NOT NULL DEFAULT 1,
+
+  -- Verdict: is the patient suitable for remote therapy?
+  is_viable               BOOLEAN NOT NULL,
+
+  -- Encrypted justification (clinical content — envelope encryption)
+  -- AAD = patient_id::text || '|' || assessment_id::text
+  content_ciphertext      BYTEA NOT NULL,
+  content_iv              BYTEA NOT NULL,
+  content_tag             BYTEA NOT NULL,
+  dek_wrapped             BYTEA NOT NULL,
+  dek_iv                  BYTEA NOT NULL,
+  dek_tag                 BYTEA NOT NULL,
+  kek_version             SMALLINT NOT NULL DEFAULT 1,
+
+  assessed_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+  retention_until         TIMESTAMPTZ,
+  created_at              TIMESTAMPTZ DEFAULT now() NOT NULL,
+
+  CONSTRAINT uq_viability_patient_version UNIQUE (patient_id, version_number)
+);
+
+ALTER TABLE remote_viability_assessments ENABLE ROW LEVEL SECURITY;
+
+-- Append-only: no UPDATE/DELETE (new assessment = new version_number)
+CREATE TRIGGER trg_viability_no_update
+  BEFORE UPDATE ON remote_viability_assessments
+  FOR EACH ROW EXECUTE FUNCTION fn_block_append_only_mutation();
+
+CREATE TRIGGER trg_viability_no_delete
+  BEFORE DELETE ON remote_viability_assessments
+  FOR EACH ROW EXECUTE FUNCTION fn_block_delete_during_retention();

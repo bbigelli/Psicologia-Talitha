@@ -1,8 +1,8 @@
 # Data Architecture: Talitha Psicologia
 
-**Versao:** 1.0
+**Versao:** 1.1
 **Data:** 2026-09-09
-**Referencia:** `docs/talitha-architecture.md` (v1.1, secao 17), `docs/talitha-security-review-architecture.md` (secao 4), `docs/talitha-security-review-prd.md`, `docs/talitha-prd.md` (emendas E1-E4), `docs/talitha-user-stories.md`, `docs/adr/ADR-0001..0006`, `CLAUDE.md`, `docs/decisions.md`
+**Referencia:** `docs/talitha-architecture.md` (v1.1, secao 17), `docs/talitha-security-review-architecture.md` (secao 4), `docs/talitha-security-review-schema.md` (patches A1-A4, M1, B1-B2, R19), `docs/talitha-security-review-prd.md`, `docs/talitha-prd.md` (emendas E1-E8), `docs/adr/ADR-0001..0006`, `CLAUDE.md`, `docs/decisions.md`
 
 ---
 
@@ -16,6 +16,7 @@ erDiagram
     profiles ||--o{ clinical_records : "psychologist writes"
     profiles ||--o{ session_note_drafts : "psychologist drafts"
     profiles ||--o{ receipts : "psychologist issues"
+    profiles ||--o{ remote_viability_assessments : "psychologist assesses"
 
     patients ||--o{ sessions : "attends"
     patients ||--o{ charges : "is billed"
@@ -27,150 +28,20 @@ erDiagram
     patients ||--o{ data_subject_requests : "submits"
     patients ||--o{ receipts : "receives"
     patients ||--o{ subscriptions : "subscribes"
+    patients ||--o{ remote_viability_assessments : "assessed for"
 
     sessions ||--o{ session_note_drafts : "has draft"
     sessions ||--o{ session_reminders : "has reminders"
     sessions ||--o{ email_action_tokens : "linked to"
     sessions ||--|{ clinical_records : "generates"
 
-    charges ||--|{ receipts : "produces (1:1)"
+    charges ||--|{ receipts : "produces 1:1"
     charges ||--o{ billing_rule_events : "triggers"
     charges }o--|| payment_webhook_events : "conciliated by"
     charges }o--o| subscriptions : "belongs to"
 
     receipt_counters ||--o{ receipts : "numbers"
-
     clinical_records ||--o{ clinical_record_versions : "versioned"
-
-    profiles {
-        uuid id PK
-        text role
-        text full_name
-        boolean onboarding_completed
-        timestamptz created_at
-    }
-    patients {
-        uuid id PK
-        uuid user_id FK
-        uuid psychologist_id FK
-        text cpf_hmac UK
-        date date_of_birth
-        text status
-        timestamptz retention_until
-    }
-    sessions {
-        uuid id PK
-        uuid patient_id FK
-        uuid psychologist_id FK
-        timestamptz scheduled_at
-        text room_name UK
-        timestamptz waiting_since
-        timestamptz admitted_at
-        text status
-        text payment_status
-    }
-    clinical_records {
-        uuid id PK
-        uuid patient_id FK
-        uuid session_id FK
-        bytea content_ciphertext
-        smallint kek_version
-        timestamptz retention_until
-    }
-    anamnesis {
-        uuid id PK
-        uuid patient_id FK_UK
-        bytea content_ciphertext
-        smallint kek_version
-    }
-    session_note_drafts {
-        uuid id PK
-        uuid session_id FK_UK
-        uuid patient_id FK
-        bytea content_ciphertext
-        smallint kek_version
-    }
-    charges {
-        uuid id PK
-        uuid patient_id FK
-        uuid psychologist_id FK
-        text asaas_payment_id UK
-        numeric amount
-        text status
-    }
-    subscriptions {
-        uuid id PK
-        uuid patient_id FK_UK
-        text asaas_subscription_id UK
-        numeric monthly_value
-        text status
-    }
-    payment_webhook_events {
-        text asaas_event_id PK
-        text event_type
-        text payment_id
-        timestamptz received_at
-    }
-    receipt_counters {
-        int year PK
-        int last_number
-    }
-    receipts {
-        uuid id PK
-        uuid charge_id FK_UK
-        int receipt_number
-        int receipt_year
-        text status
-    }
-    consents {
-        uuid id PK
-        uuid patient_id FK
-        text purpose
-        text action
-        text consent_text_hash
-        timestamptz occurred_at
-    }
-    communication_preferences {
-        uuid id PK
-        uuid patient_id FK
-        text channel
-        text purpose
-        boolean opted_out
-    }
-    email_action_tokens {
-        uuid id PK
-        text token_hash UK
-        text purpose
-        uuid patient_id FK
-        uuid session_id FK
-        timestamptz expires_at
-        timestamptz used_at
-    }
-    data_subject_requests {
-        uuid id PK
-        uuid patient_id FK
-        text request_type
-        text status
-        timestamptz due_at
-        text decision
-        text legal_basis
-    }
-    audit_log {
-        uuid id PK
-        uuid actor_id FK
-        text actor_source
-        text action
-        uuid patient_id
-        bytea prev_hash
-        bytea row_hash
-        timestamptz occurred_at
-    }
-    clinical_record_versions {
-        uuid id PK
-        uuid record_id FK
-        int version_number
-        bytea content_ciphertext
-    }
 ```
 
 ---
@@ -179,551 +50,288 @@ erDiagram
 
 ### 1. profiles
 
-**Proposito:** Perfil do usuario vinculado a `auth.users`. `role` e a fonte canonica de autorizacao, espelhada em `app_metadata` por trigger. Contem dados profissionais da psicologa.
+**Proposito:** Perfil do usuario vinculado a `auth.users`. `role` e a fonte canonica de autorizacao, espelhada em `app_metadata` por trigger.
 
 **Classificacao LGPD:** D6 (Interno), D15/D16 (Publico/Confidencial para psicologa)
 **Retencao:** Vida da conta
 
-**Colunas:**
+**Colunas:** id (UUID PK = auth.users.id), role (TEXT NOT NULL CHECK), full_name, email, phone, crp, crp_region, specialty, default_session_value, cancellation_policy_hours, cpf_ciphertext..cpf_kek_version (envelope, psicologa), onboarding_completed, created_at, updated_at.
 
-| Coluna | Tipo | Constraints | Descricao |
-|--------|------|-------------|-----------|
-| id | UUID | PK, FK auth.users ON DELETE CASCADE | = auth.users.id |
-| role | TEXT | NOT NULL, CHECK ('psychologist','patient') | Fonte canonica |
-| full_name | TEXT | NOT NULL | Nome completo |
-| email | TEXT | NOT NULL | Email |
-| phone | TEXT | | Telefone |
-| crp | TEXT | | CRP (psicologa) |
-| crp_region | TEXT | | Regiao do CRP |
-| epsi_status | TEXT | CHECK ('active','pending') | Status e-Psi |
-| specialty | TEXT | | Especialidade |
-| default_session_value | NUMERIC(10,2) | | Valor padrao da sessao |
-| cancellation_policy_hours | INT | DEFAULT 24 | Prazo de cancelamento |
-| cpf_ciphertext..cpf_kek_version | BYTEA/SMALLINT | | CPF criptografado (D16) |
-| onboarding_completed | BOOLEAN | NOT NULL DEFAULT false | Onboarding |
-| created_at | TIMESTAMPTZ | DEFAULT now() NOT NULL | |
-| updated_at | TIMESTAMPTZ | DEFAULT now() NOT NULL | |
+**E5:** Coluna `epsi_status` REMOVIDA (plataforma e-Psi desativada 31/08/2024, Res. CFP 09/2024). CRP ativo continua obrigatorio.
 
-**Decisoes:**
-- `profiles.id = auth.users.id` (padrao Supabase) em vez de UUID auto-gerado, para que `auth.uid()` resolva diretamente.
-- CPF da psicologa criptografado com envelope (mesma infra do paciente) por precaucao, embora a arquitetura nao o exija explicitamente. E Confidencial (D16) e usado apenas server-side para recibos.
-- Trigger `trg_profiles_protect_role` impede UPDATE na coluna role por qualquer usuario.
-- Trigger `trg_profiles_sync_role_metadata` espelha role em `raw_app_meta_data` via SECURITY DEFINER.
+**Protecoes:**
+- Trigger `trg_profiles_protect_role` impede UPDATE de role por qualquer usuario
+- B2: Trigger `trg_profiles_protect_psychologist_columns` impede paciente de alterar colunas da psicologa (crp, specialty, default_session_value, etc.)
+- Trigger `trg_profiles_sync_role_metadata` espelha role em `app_metadata` (SECURITY DEFINER)
+- A4: REVOKE ALL table-level + GRANT SELECT/UPDATE column-level (colunas de CPF cifrado inacessiveis via browser)
 
 ### 2. patients
 
-**Proposito:** Dados do paciente. CPF cifrado com envelope + blind index HMAC-SHA256 para unicidade. Vinculado a auth.users quando o paciente aceita o convite.
-
 **Classificacao LGPD:** D5 (Confidencial - CPF), D6 (Interno)
-**Retencao:** 5 anos apos `treatment_ended_at` (Emenda E1 - fixa, sem regra de 20 anos)
-
-**Colunas relevantes:**
-
-| Coluna | Tipo | Constraints | Descricao |
-|--------|------|-------------|-----------|
-| id | UUID | PK DEFAULT gen_random_uuid() | |
-| user_id | UUID | UNIQUE FK auth.users ON DELETE SET NULL | Nullable ate aceite do convite |
-| psychologist_id | UUID | NOT NULL FK profiles | |
-| full_name | TEXT | NOT NULL | |
-| email | TEXT | NOT NULL | |
-| phone | TEXT | | Eliminavel por LGPD |
-| date_of_birth | DATE | NOT NULL | |
-| cpf_ciphertext..cpf_kek_version | BYTEA/SMALLINT | NOT NULL | Envelope encryption |
-| cpf_hmac | TEXT | NOT NULL UNIQUE | HMAC-SHA256 blind index |
-| status | TEXT | NOT NULL DEFAULT 'invited' | invited/active/inactive/treatment_ended |
-| treatment_started_at | TIMESTAMPTZ | | |
-| treatment_ended_at | TIMESTAMPTZ | | |
-| deleted_at | TIMESTAMPTZ | | Soft delete |
-| retention_until | TIMESTAMPTZ | | Calculado automaticamente |
+**Retencao:** 5 anos apos `treatment_ended_at` (Emenda E1)
 
 **Constraints criticas:**
-- `CHECK (date_of_birth <= current_date - interval '18 years')` -- Requisito 18: unico enforcement de E1 que sobrevive a RPC, seed e correcao manual.
-- `cpf_hmac UNIQUE` -- blind index com HMAC-SHA256 chaveado (nunca SHA-256 puro)
-- Trigger `trg_patients_block_delete` impede DELETE durante retencao
+- `CHECK (date_of_birth <= current_date - interval '18 years')` (Requisito 18)
+- `cpf_hmac UNIQUE` (blind index HMAC-SHA256 chaveado)
+- A2: Trigger `trg_patients_set_retention` auto-calcula `retention_until = treatment_ended_at + 5 years` e impede reducao manual
+- A2: `fn_block_delete_during_retention` tambem bloqueia DELETE quando `treatment_ended_at IS NOT NULL AND retention_until IS NULL` (safety net)
+- A4: REVOKE ALL table-level + GRANT SELECT column-level (colunas cifradas inacessiveis)
 
 ### 3. sessions
 
-**Proposito:** Sessoes de terapia. `room_name` e 128 bits aleatorios, unico, nunca reutilizado. Estado da sala de espera (`waiting_since`, `admitted_at`) nunca alterado por UPDATE direto.
-
-**Classificacao LGPD:** D3 (Sensivel-LGPD - existencia do vinculo), D12 (room metadata)
-**Retencao:** Vinculada ao paciente (5 anos)
-
-**Colunas relevantes:**
-
-| Coluna | Tipo | Constraints | Descricao |
-|--------|------|-------------|-----------|
-| id | UUID | PK | |
-| patient_id | UUID | NOT NULL FK patients ON DELETE RESTRICT | |
-| psychologist_id | UUID | NOT NULL FK profiles | |
-| scheduled_at | TIMESTAMPTZ | NOT NULL | Data/hora agendada |
-| duration_minutes | INT | NOT NULL DEFAULT 50 | |
-| status | TEXT | NOT NULL DEFAULT 'scheduled' | scheduled/confirmed/in_progress/completed/cancelled/no_show |
-| room_name | TEXT | UNIQUE NOT NULL DEFAULT gen 128 bits | LiveKit room identifier |
-| waiting_since | TIMESTAMPTZ | | Paciente na sala de espera |
-| admitted_at | TIMESTAMPTZ | | Paciente admitido |
-| payment_status | TEXT | NOT NULL DEFAULT 'pending' | pending/paid/overdue/refunded/waived |
-| recurrence_group_id | UUID | | Agrupamento de recorrencia |
-| cancelled_at | TIMESTAMPTZ | | |
-| cancelled_by | TEXT | | psychologist/patient/system |
-| cancellation_reason | TEXT | | |
-
 **Protecoes (Requisito 6 - AC2):**
-- `REVOKE UPDATE ON sessions FROM authenticated, anon` -- nenhum UPDATE direto
-- `REVOKE INSERT ON sessions FROM authenticated, anon` -- criacao via service_role
-- `REVOKE DELETE ON sessions FROM authenticated, anon`
-- Transicoes de estado APENAS por RPCs SECURITY DEFINER:
-  - `enter_waiting_room(session_id)` -- escreve SO `waiting_since`
-  - `admit_patient(session_id)` -- escreve SO `admitted_at`
-  - `cancel_session(session_id, reason)` -- transicao controlada
-- Trigger `trg_sessions_on_reschedule` regenera `room_name` e zera `waiting_since`/`admitted_at` quando `scheduled_at` muda
+- REVOKE UPDATE/INSERT/DELETE FROM authenticated, anon
+- RPCs: enter_waiting_room, admit_patient, cancel_session
+- Trigger regenera room_name na remarcacao
 
 ### 4. clinical_records
 
-**Proposito:** Registros de evolucao clinica. Conteudo cifrado com envelope encryption (7 colunas). AAD = `patient_id|record_id`.
+**Envelope encryption (7 colunas).** AAD = `patient_id|record_id`.
 
-**Classificacao LGPD:** D1 (Sensivel-LGPD)
-**Retencao:** 5 anos apos encerramento (CFP)
-
-**Envelope encryption (Requisito 1):**
-```
-content_ciphertext  BYTEA NOT NULL    -- conteudo cifrado com DEK
-content_iv          BYTEA NOT NULL    -- 12 bytes (GCM nonce)
-content_tag         BYTEA NOT NULL    -- 16 bytes (GCM auth tag)
-dek_wrapped         BYTEA NOT NULL    -- DEK cifrada com KEK
-dek_iv              BYTEA NOT NULL
-dek_tag             BYTEA NOT NULL
-kek_version         SMALLINT NOT NULL DEFAULT 1
-```
-
-**RLS (Requisito 28):**
-- Nenhuma policy concede SELECT a `patient`
-- Clausula `(auth.jwt()->>'aal') = 'aal2'` em todas as policies
-- REVOKE SELECT das colunas de ciphertext de `authenticated`
+**RLS (Requisito 28):** Nenhuma policy concede SELECT a patient. aal2 obrigatorio. A4: colunas de ciphertext inacessiveis via browser; INSERT/UPDATE concedidos table-level para Server Actions que escrevem ciphertext.
 
 ### 5. clinical_record_versions
 
-**Proposito:** Versionamento append-only de evolucoes (Requisito 12). Toda edicao de `clinical_records` armazena a versao anterior aqui.
-
-**Classificacao LGPD:** D1 (Sensivel-LGPD)
-**Retencao:** Igual a clinical_records
+**M1:** Append-only enforced por triggers `trg_clinical_record_versions_no_update` e `trg_clinical_record_versions_no_delete` (fecha Requisito 12).
 
 ### 6. anamnesis
 
-**Proposito:** Ficha inicial do paciente. Campos de saude cifrados (medicacao, condicoes, contato de emergencia). Campos nao-sensiveis em claro para listagem.
-
-**Classificacao LGPD:** D2 (Sensivel-LGPD), D4 (Confidencial - contato emergencia)
-**Retencao:** 5 anos
-
-**RLS (Requisito 28):**
-- Paciente: INSERT/UPDATE/SELECT da propria linha (sem acesso a colunas de ciphertext via REVOKE)
-- Psicologa: SELECT com `aal2`
-- Ninguem tem DELETE durante retencao
+Paciente: INSERT/UPDATE/SELECT propria (ciphertext REVOKEd). Psicologa: SELECT com aal2. Retention trigger ativo.
 
 ### 7. session_note_drafts
 
-**Proposito:** Rascunhos de anotacoes durante sessao (Requisito 23). Conteudo clinico - envelope completo. AAD = `patient_id|session_id`.
-
-**Classificacao LGPD:** D1 (Sensivel-LGPD)
-**Retencao:** Curta - deletado ao gravar evolucao; job de limpeza para orfaos > 7 dias
-
-**RLS:** SO psicologa, nenhuma policy de SELECT para patient, aal2 obrigatorio.
+SO psicologa, aal2. DELETE pela psicologa ao salvar evolucao.
 
 ### 8. charges
 
-**Proposito:** Cobrancas vinculadas ao Asaas. Maquina de estados monotonica (Requisito 10, 31).
+Maquina de estados monotonica (trigger). Status: pending_creation, pending, overdue, paid, refunded, chargeback, cancelled.
 
-**Classificacao LGPD:** D11 (Interno/Confidencial)
-**Retencao:** 5 anos (fiscal)
+### 9-12. subscriptions, payment_webhook_events, receipt_counters, receipts
 
-**Maquina de estados (Requisito 10):**
-```
-pending_creation -> pending -> overdue -> paid -> refunded/chargeback
-                 -> cancelled
-pending -> paid (pagamento antes do vencimento)
-pending -> cancelled
-overdue -> paid
-overdue -> cancelled
-paid -> refunded | chargeback (unicas transicoes permitidas a partir de paid)
-```
-Trigger `trg_charges_monotonic_status` impede regressoes.
-
-### 9. subscriptions
-
-**Proposito:** Assinaturas recorrentes via Asaas. UNIQUE por paciente (apenas uma ativa por vez).
-
-**Classificacao LGPD:** D11 (Interno)
-**Retencao:** 5 anos (fiscal)
-
-### 10. payment_webhook_events
-
-**Proposito:** Idempotencia de webhooks (Requisito 7). PK = `asaas_event_id`. Sem payload bruto - colunas de allowlist apenas. CPF e nome completo PROIBIDOS.
-
-**Classificacao LGPD:** D11 (Interno)
-**Retencao:** 5 anos
-
-**Colunas permitidas (allowlist):** `event_type`, `payment_id`, `status`, `value`, `due_date`, `received_at`, `processed_at`, `result`.
-
-### 11. receipt_counters
-
-**Proposito:** Contador transacional por ano (Requisito 8, ADR-0005). `SELECT FOR UPDATE` serializa acesso. SEQUENCE nao serve (lacunas em rollback).
-
-### 12. receipts
-
-**Proposito:** Recibos IRPF numerados (Requisito 9). `UNIQUE(charge_id)` garante um recibo por cobranca.
-
-**Classificacao LGPD:** D11 (Confidencial - agrega D3+D5)
-**Retencao:** 5 anos (fiscal)
-
-**Snapshots:** Nome, CRP e CPFs sao congelados no momento da geracao (Bill Inmon). CPFs armazenados cifrados com envelope.
+Conforme v1.0. Webhook sem payload bruto. Contador transacional (FOR UPDATE). Receipts UNIQUE(charge_id).
 
 ### 13. consents
 
-**Proposito:** Registros de consentimento append-only (Requisito 11). Sem `subject_type = 'guardian'` (Emenda E1). Todos os timestamps em `timestamptz` UTC.
+**A3:** Append-only enforced por 3 triggers (UPDATE, DELETE, TRUNCATE) + FORCE ROW LEVEL SECURITY + REVOKE UPDATE/DELETE/TRUNCATE FROM service_role. Mesmo rigor do audit_log.
 
-**Classificacao LGPD:** D9 (Confidencial - prova de conformidade)
-**Retencao:** Igual ao registro do paciente
+**E7:** Finalidades e versionamento por hash ja acomodam clausulas de formato online, politica de faltas e queda de conexao sem alteracao de schema. Quando o texto do termo muda, `consent_version` incrementa e `consent_text_hash` muda; pacientes devem re-aceitar.
 
-**Finalidades (purpose):**
-- `online_therapy` -- Termo CFP (obrigatorio)
-- `lgpd_clinical` -- Consentimento LGPD principal (obrigatorio)
-- `lgpd_asaas` -- Compartilhamento com Asaas (obrigatorio, destacado)
-- `communication` -- Lembretes por email (opcional)
+### 14-16. communication_preferences, email_action_tokens, data_subject_requests
 
-### 14. communication_preferences
+**R19:** `email_action_tokens` agora acessado via RPC `consume_email_token` que valida expiracao, uso unico e purpose match atomicamente (fecha Requisito 19).
 
-**Proposito:** Opt-out por canal/finalidade (Requisito 22). Consultado pela regua e lembretes antes de cada envio.
+### 17-18. session_reminders, billing_rule_events
 
-**Classificacao LGPD:** D6 (Interno) - eliminavel por LGPD
-**Retencao:** Vida da conta (eliminavel a pedido)
-
-### 15. email_action_tokens
-
-**Proposito:** Tokens hasheados para links de email (Requisito 19). Token NUNCA em claro no banco. RLS sem nenhuma policy para authenticated/anon.
-
-**Classificacao LGPD:** D8 (Confidencial)
-**Retencao:** Curta (auto-expiracao)
-
-**Protecoes:**
-- `token_hash` e SHA-256 do token real -- token nunca em claro
-- `used_at` marcado na mesma transacao da acao
-- Um token por acao (nunca token generico que aceite acao como parametro)
-- TTL: 72h para convite, horario da sessao para confirmacao
-- **Zero policies RLS** -- acesso so via RPC SECURITY DEFINER
-
-### 16. data_subject_requests
-
-**Proposito:** Solicitacoes LGPD (Requisito 21). Resposta fundamentada e requisito de conformidade.
-
-**Classificacao LGPD:** D9/D10 (Confidencial - prova de compliance)
-**Retencao:** Igual ao registro do paciente
-
-**Campos de resposta:** `decision`, `legal_basis`, `eliminated_categories`, `retained_categories` -- sem esses campos, nao ha prova de atendimento.
-
-### 17. session_reminders
-
-**Proposito:** Idempotencia de lembretes (Requisito 29). `UNIQUE (session_id, reminder_type)` como constraint de banco.
-
-### 18. billing_rule_events
-
-**Proposito:** Idempotencia da regua de cobranca (Requisito 29). `UNIQUE (charge_id, step)` como constraint de banco.
+UNIQUE constraints de banco para idempotencia.
 
 ### 19. audit_log
 
-**Proposito:** Log de auditoria imutavel com 4 camadas (Requisito 3, ADR-0004).
+4 camadas. **A1:** `log_audit` agora valida role e ownership — paciente so pode logar acoes sobre si mesmo, psicologa so sobre seus pacientes. Impede injecao de entradas fabricadas no log de compliance.
 
-**Classificacao LGPD:** D10 (Confidencial - prova em processo etico)
-**Retencao:** Igual ao registro do paciente (5 anos min)
+### 20. remote_viability_assessments (NOVA — E6)
 
-**4 Camadas:**
+**Proposito:** Res. CFP 09/2024 exige que a avaliacao de viabilidade do atendimento remoto seja registrada no prontuario, com data. Este registro protege a psicologa perante o CRP.
 
-| Camada | Mecanismo | Protege contra |
-|--------|-----------|---------------|
-| 1 | RLS + FORCE ROW LEVEL SECURITY | Cliente autenticado |
-| 2 | Triggers BEFORE UPDATE/DELETE (row) e TRUNCATE (statement) | service_role e bugs da app |
-| 3 | REVOKE UPDATE/DELETE/TRUNCATE de authenticated, anon, service_role | Defense in depth |
-| 4 | Hash chain (prev_hash/row_hash) + pg_advisory_xact_lock | Superuser/insider (detectavel) |
+**Classificacao LGPD:** D1 (Sensivel-LGPD — conteudo clinico)
+**Retencao:** 5 anos (mesma retencao do prontuario)
 
-**Duas funcoes de escrita (Requisito 4):**
-- `log_audit(...)` -- contexto usuario, `actor_id := auth.uid()`, RAISE se NULL
-- `log_audit_system(...)` -- contexto service_role, recebe `p_actor_id`, executavel APENAS por service_role
+**Modelagem como tabela separada (nao extensao de clinical_records):**
+1. Ciclo de vida diferente: um por paciente com versionamento, nao um por sessao
+2. Append-only independente — misturar com clinical_records exigiria session_id nullable ou discriminador, enfraquecendo o modelo
+3. RLS e retencao proprias, mesmo padrao das tabelas clinicas
 
-**Coluna `actor_source`:** enum `('user', 'edge_function', 'webhook', 'cron', 'anonymous')`. `actor_id` nullable apenas quando `actor_source = 'anonymous'`.
+**Colunas:** id (UUID PK), patient_id (FK), psychologist_id (FK), version_number (INT, UNIQUE com patient_id), is_viable (BOOLEAN NOT NULL), content_ciphertext..kek_version (7 colunas envelope, AAD = patient_id|assessment_id), assessed_at (TIMESTAMPTZ), retention_until, created_at.
 
-**Serializacao (Requisito 25):** `pg_advisory_xact_lock(hashtext('audit_log_chain'))` no trigger BEFORE INSERT impede fork da cadeia sob concorrencia.
+**Protecoes:** Append-only (triggers bloqueiam UPDATE/DELETE). Retention trigger. RLS: psicologa com aal2 apenas. Nenhuma policy para patient. A4: colunas cifradas inacessiveis via browser.
 
-**Decisao sobre async vs sync (Requisito 26):** Todos os eventos sao sincronos, incluindo `VIEW_RECORD`. O volume deste produto (~20-30 pacientes, uma psicologa) torna o custo de ~5ms por log irrelevante. Isso elimina a necessidade de tabela outbox `audit_log_pending` e simplifica significativamente a arquitetura. Se o volume crescer, migrar VIEW_RECORD para outbox.
+**E8:** Nenhum CHECK, enum ou trigger bloqueia caso por elegibilidade clinica. O campo `is_viable` e um registro da decisao da psicologa, nao um gate automatico. A decisao e clinica.
 
 ---
 
-## RLS Policies
-
-### Matriz completa
+## RLS Policies — Matriz (v1.1)
 
 | Tabela | SELECT | INSERT | UPDATE | DELETE |
 |--------|--------|--------|--------|--------|
-| **profiles** | Psicologa: todas; Paciente: propria + psicologa | Nenhuma (service_role) | Proprio usuario (exceto role) | Nenhuma |
-| **patients** | Psicologa: todas; Paciente: propria | Nenhuma (service_role) | Nenhuma (service_role/RPC) | Nenhuma (trigger de retencao) |
-| **sessions** | Psicologa: suas; Paciente: suas | Nenhuma (REVOKE) | Nenhuma (REVOKE, RPCs) | Nenhuma (REVOKE) |
-| **clinical_records** | Psicologa: suas, aal2 | Psicologa: aal2 | Psicologa: aal2 | Nenhuma (soft delete) |
-| **clinical_record_versions** | Psicologa: editadas por ela, aal2 | Psicologa: aal2 | Nenhuma (append-only) | Nenhuma |
-| **anamnesis** | Psicologa: de seus pacientes, aal2; Paciente: propria | Paciente: propria | Paciente: propria | Nenhuma (retencao) |
-| **session_note_drafts** | Psicologa: seus, aal2 | Psicologa: aal2 | Psicologa: aal2 | Psicologa: aal2 |
-| **charges** | Psicologa: suas; Paciente: proprias | Nenhuma (service_role) | Nenhuma (service_role) | Nenhuma |
-| **subscriptions** | Psicologa: suas; Paciente: proprias | Nenhuma (service_role) | Nenhuma (service_role) | Nenhuma |
+| **profiles** | Psicologa: todas; Paciente: propria + psicologa | Nenhuma (service_role) | Proprio (exceto role, B2: exceto colunas de psicologa) | Nenhuma |
+| **patients** | Psicologa: todas; Paciente: propria | Nenhuma | Nenhuma | Nenhuma (trigger) |
+| **sessions** | Psicologa: suas; Paciente: suas | Nenhuma (REVOKE) | Nenhuma (REVOKE) | Nenhuma (REVOKE) |
+| **clinical_records** | Psicologa: aal2 | Psicologa: aal2 | Psicologa: aal2 | Nenhuma |
+| **clinical_record_versions** | Psicologa: aal2 | Psicologa: aal2 | Nenhuma (trigger) | Nenhuma (trigger) |
+| **anamnesis** | Psicologa: aal2; Paciente: propria | Paciente: propria | Paciente: propria | Nenhuma |
+| **session_note_drafts** | Psicologa: aal2 | Psicologa: aal2 | Psicologa: aal2 | Psicologa: aal2 |
+| **remote_viability_assessments** | Psicologa: aal2 | Psicologa: aal2 | Nenhuma (trigger) | Nenhuma (trigger) |
+| **charges** | Psicologa; Paciente: proprias | Nenhuma | Nenhuma | Nenhuma |
+| **subscriptions** | Psicologa; Paciente: proprias | Nenhuma | Nenhuma | Nenhuma |
 | **payment_webhook_events** | Nenhuma | Nenhuma (service_role) | Nenhuma | Nenhuma |
-| **receipt_counters** | Nenhuma | Nenhuma (service_role) | Nenhuma (service_role) | Nenhuma |
-| **receipts** | Psicologa: seus; Paciente: proprios | Nenhuma (service_role) | Nenhuma | Nenhuma |
-| **consents** | Psicologa: todos; Paciente: proprios | Paciente: proprios | Nenhuma (append-only) | Nenhuma |
-| **communication_preferences** | Psicologa + paciente proprio | Nenhuma (app cria) | Paciente: proprio | Nenhuma |
+| **receipt_counters** | Nenhuma | Nenhuma | Nenhuma | Nenhuma |
+| **receipts** | Psicologa; Paciente: proprios | Nenhuma | Nenhuma | Nenhuma |
+| **consents** | Psicologa; Paciente: proprios | Paciente: proprios | Nenhuma (trigger) | Nenhuma (trigger) |
+| **communication_preferences** | Psicologa; Paciente: proprio | Nenhuma | Paciente: proprio | Nenhuma |
 | **email_action_tokens** | Nenhuma | Nenhuma | Nenhuma | Nenhuma |
-| **data_subject_requests** | Psicologa: todos; Paciente: proprios | Paciente: proprios | Nenhuma (service_role) | Nenhuma |
-| **session_reminders** | Psicologa: de suas sessoes | Nenhuma (cron) | Nenhuma (cron) | Nenhuma |
-| **billing_rule_events** | Psicologa: de suas charges | Nenhuma (cron) | Nenhuma (cron) | Nenhuma |
-| **audit_log** | Psicologa: todos | Nenhuma (via funcao SD) | Nenhuma (trigger + REVOKE) | Nenhuma (trigger + REVOKE) |
-
-**Convencao de "Nenhuma":** ausencia de policy = operacao negada pelo Postgres. E decisao explicita, nao omissao.
+| **data_subject_requests** | Psicologa; Paciente: proprios | Paciente: proprios | Nenhuma | Nenhuma |
+| **session_reminders** | Psicologa: de suas sessoes | Nenhuma | Nenhuma | Nenhuma |
+| **billing_rule_events** | Psicologa: de suas charges | Nenhuma | Nenhuma | Nenhuma |
+| **audit_log** | Psicologa: todos | Nenhuma (funcao SD) | Nenhuma (trigger+REVOKE) | Nenhuma (trigger+REVOKE) |
 
 ---
 
-## Triggers e Functions
+## Triggers e Functions (v1.1)
 
 | Trigger / Function | Tabela | Evento | O que faz |
 |---|---|---|---|
-| `fn_update_timestamp` | -- | -- | Funcao generica: `NEW.updated_at = now()` |
-| `trg_*_updated_at` | Todas com updated_at | BEFORE UPDATE | Atualiza `updated_at` |
-| `fn_profiles_protect_role` | profiles | BEFORE UPDATE | Impede alteracao de `role` |
-| `fn_profiles_sync_role_metadata` | profiles | AFTER INSERT/UPDATE OF role | Espelha role em `app_metadata` (SECURITY DEFINER) |
-| `fn_sessions_on_reschedule` | sessions | BEFORE UPDATE | Regenera room_name e zera waiting/admitted quando scheduled_at muda |
-| `fn_charges_monotonic_status` | charges | BEFORE UPDATE OF status | Impede regressao na maquina de estados de pagamento |
-| `fn_block_delete_during_retention` | patients, clinical_records, anamnesis | BEFORE DELETE | Bloqueia DELETE durante periodo de retencao |
-| `fn_audit_log_block_mutation` | audit_log | BEFORE UPDATE/DELETE (row), BEFORE TRUNCATE (statement) | Impede qualquer mutacao no audit log |
-| `fn_audit_log_hash_chain` | audit_log | BEFORE INSERT | Calcula prev_hash e row_hash com serializacao via pg_advisory_xact_lock |
+| `fn_update_timestamp` | -- | -- | Generica: `NEW.updated_at = now()` |
+| `fn_profiles_protect_role` | profiles | BEFORE UPDATE | Impede alteracao de role |
+| `fn_profiles_protect_psychologist_columns` | profiles | BEFORE UPDATE | B2: impede paciente de alterar colunas da psicologa |
+| `fn_profiles_sync_role_metadata` | profiles | AFTER INSERT/UPDATE OF role | Espelha role em app_metadata (SD) |
+| `fn_sessions_on_reschedule` | sessions | BEFORE UPDATE | Regenera room_name, zera waiting/admitted |
+| `fn_charges_monotonic_status` | charges | BEFORE UPDATE OF status | Impede regressao de status |
+| `fn_patients_set_retention` | patients | BEFORE UPDATE | A2: auto-calcula retention_until, impede reducao |
+| `fn_block_delete_during_retention` | patients, clinical_records, anamnesis, remote_viability | BEFORE DELETE | Bloqueia DELETE durante retencao + safety net |
+| `fn_block_append_only_mutation` | consents, clinical_record_versions, remote_viability | UPDATE/DELETE/TRUNCATE | Impede mutacao em registros de compliance |
+| `fn_audit_log_block_mutation` | audit_log | UPDATE/DELETE/TRUNCATE | Imutabilidade do audit log |
+| `fn_audit_log_hash_chain` | audit_log | BEFORE INSERT | Hash chain com pg_advisory_xact_lock |
 
-### RPCs SECURITY DEFINER
+### RPCs SECURITY DEFINER (8 funcoes)
 
-Cada RPC segue o padrao: search_path fixo, validacao de auth.uid(), validacao de papel, validacao de ownership, escrita de UMA unica coluna.
-
-| RPC | Parametros | O que faz | Motivo SECURITY DEFINER |
-|---|---|---|---|
-| `log_audit` | patient_id, action, target_id, ... | Insere no audit_log com actor_id = auth.uid() | INSERT no audit_log so via SD (camada 3) |
-| `log_audit_system` | actor_id, actor_source, ... | Insere no audit_log para contexto Edge/cron | Executavel APENAS por service_role |
-| `enter_waiting_room` | session_id | Escreve SO waiting_since; valida ownership e janela temporal | RLS nao e column-level (AC2) |
-| `admit_patient` | session_id | Escreve SO admitted_at; exige role=psychologist | Idem |
-| `cancel_session` | session_id, reason | Transicao controlada de estado | Idem |
-| `fn_verify_audit_chain` | from_id, to_id | Recalcula e verifica integridade da cadeia de hash | So psicologa pode verificar |
-
----
-
-## RBAC
-
-**Abordagem:** A (roles fixos em `profiles`) -- conforme PRD.
-
-**Roles:**
-- `psychologist` -- acesso total a gestao (1 usuario)
-- `patient` -- acesso ao proprio portal (N usuarios)
-
-**Fonte canonica:** `profiles.role` (Requisito 13). Espelhado em `app_metadata` por trigger para caminho rapido do middleware. RLS nunca confia apenas no claim do JWT. Policies clinicas exigem `(auth.jwt()->>'aal') = 'aal2'` (Requisito 29).
-
-**Bootstrap:**
-- Psicologa provisionada por seed/migration
-- Paciente criado exclusivamente via convite
-- Signup publico desabilitado
+| RPC | O que faz |
+|---|---|
+| `log_audit` | A1: insere no audit_log com validacao de role + ownership |
+| `log_audit_system` | Insere no audit_log para contexto Edge/cron (so service_role) |
+| `enter_waiting_room` | Escreve SO waiting_since com validacao completa |
+| `admit_patient` | Escreve SO admitted_at, exige psychologist |
+| `cancel_session` | Transicao controlada de estado |
+| `consume_email_token` | R19: valida expiracao, uso unico, purpose match atomicamente |
+| `fn_verify_audit_chain` | Recalcula e verifica integridade do hash chain |
+| `fn_profiles_sync_role_metadata` | Espelha role em app_metadata (trigger SD) |
 
 ---
 
-## Eliminacao Seletiva por Categoria (Requisito 20)
+## A4: Estrategia de REVOKE/GRANT para colunas cifradas
 
-| Categoria de Dado | Base legal apos revogacao | Na revogacao | No pedido de eliminacao |
-|---|---|---|---|
-| Evolucao clinica, anamnese (D1, D2) | Obrigacao regulatoria CFP | Congelar: read-only, deleted_at | Negar ate retention_until |
-| Identificacao minima (nome, CPF, nascimento) | idem | Congelar | Negar ate retention_until |
-| Cobrancas, recibos (D11) | Obrigacao fiscal (5 anos) | Congelar | Negar ate 5 anos |
-| Consentimentos, audit log (D9, D10) | Prova de conformidade | Congelar | Negar durante retencao |
-| Telefone, preferencias de comunicacao, contato emergencia | Consentimento | **Eliminar/anonimizar** | **Atender** |
-| Rascunho de anotacoes incorporado | Nenhuma | Eliminar ao salvar evolucao | Atender |
-| Conta de autenticacao (auth.users) | Nenhuma apos encerramento | Revogar sessoes e desativar | Atender (deletar auth user) |
+**Problema:** o Supabase pode provisionar com `GRANT ALL ON TABLES TO authenticated` table-level, o que faz um `REVOKE SELECT (coluna)` ser ineficaz — o grant table-level prevalece.
 
----
+**Solucao aplicada:** para cada tabela com colunas cifradas:
+1. `REVOKE ALL ON <tabela> FROM authenticated` (remove qualquer grant table-level)
+2. `GRANT SELECT (<colunas permitidas>)` (lista explicita sem colunas de ciphertext)
+3. `GRANT INSERT/UPDATE/DELETE` conforme necessario para RLS funcionar
 
-## Indices
+**Consequencia pratica para o Stack Agent:** `select('*')` do browser client Supabase falhara nestas tabelas. Isto e **intencional** e ja era regra do projeto (architecture section 16.18). Sempre usar lista explicita de colunas. Server Actions que precisam ler ciphertext para decifrar devem usar service_role.
 
-Todos os indices sao justificados por queries reais das telas.
-
-```sql
--- profiles: RLS filter by role
-CREATE INDEX idx_profiles_role ON profiles(role);
-
--- patients: RLS + listing
-CREATE INDEX idx_patients_user_id ON patients(user_id);
-CREATE INDEX idx_patients_psychologist_id ON patients(psychologist_id);
-CREATE INDEX idx_patients_status ON patients(status);
-
--- sessions: agenda views
-CREATE INDEX idx_sessions_patient_id ON sessions(patient_id);
-CREATE INDEX idx_sessions_psychologist_id ON sessions(psychologist_id);
-CREATE INDEX idx_sessions_scheduled_at ON sessions(scheduled_at);
-CREATE INDEX idx_sessions_status ON sessions(status);
-CREATE INDEX idx_sessions_psychologist_scheduled ON sessions(psychologist_id, scheduled_at);
--- Agenda semanal: WHERE psychologist_id = $1 AND scheduled_at BETWEEN $2 AND $3
-
--- clinical_records: history views (sem indice em plaintext!)
-CREATE INDEX idx_clinical_records_patient_id ON clinical_records(patient_id);
-CREATE INDEX idx_clinical_records_patient_date ON clinical_records(patient_id, session_date DESC);
--- Historico: WHERE patient_id = $1 ORDER BY session_date DESC LIMIT 20
-
--- charges: dashboard financeiro
-CREATE INDEX idx_charges_patient_id ON charges(patient_id);
-CREATE INDEX idx_charges_psychologist_id ON charges(psychologist_id);
-CREATE INDEX idx_charges_status ON charges(status);
-CREATE INDEX idx_charges_due_date ON charges(due_date);
-CREATE INDEX idx_charges_status_due ON charges(status, due_date)
-  WHERE status IN ('pending', 'overdue');
--- Dashboard KPI: SELECT SUM(amount) WHERE status = 'paid' AND paid_at BETWEEN ...
--- Inadimplentes: WHERE status = 'overdue' ORDER BY due_date ASC
-
--- audit_log: browsing and patient history
-CREATE INDEX idx_audit_log_patient_id ON audit_log(patient_id);
-CREATE INDEX idx_audit_log_occurred_at ON audit_log(occurred_at DESC);
-CREATE INDEX idx_audit_log_patient_action ON audit_log(patient_id, action, occurred_at DESC);
--- Log do paciente: WHERE patient_id = $1 ORDER BY occurred_at DESC LIMIT 50
-```
-
-**Nota:** Nenhum indice em plaintext de conteudo clinico. Busca no historico e decrypt-then-filter server-side (volume: ~1500 registros max).
+**Tabelas afetadas (8):** patients, profiles, clinical_records, clinical_record_versions, anamnesis, session_note_drafts, receipts, remote_viability_assessments.
 
 ---
 
-## Seed Data
+## Verificacoes Executaveis (v1.1)
 
-### Dados estruturais (obrigatorios antes do sistema funcionar)
+### V1-V6 (originais, inalteradas)
+
+V1: `rowsecurity=false` em public -> 0 linhas.
+V2: `relforcerowsecurity=false` para audit_log -> 0 linhas.
+V3: UPDATE/DELETE/TRUNCATE em audit_log -> excecao.
+V4: UPDATE em sessions como authenticated -> permission denied.
+V5: SELECT de coluna cifrada como authenticated -> permission denied.
+V6: `fn_verify_audit_chain()` -> is_valid = true.
+
+### V7. Column-level REVOKE efetivo (A4)
 
 ```sql
--- Inicializacao do contador de recibos
-INSERT INTO receipt_counters (year, last_number) VALUES (2026, 0)
-ON CONFLICT (year) DO NOTHING;
+SET ROLE authenticated;
+SET request.jwt.claim.sub = '<psychologist_uid>';
+SET request.jwt.claims = '{"role":"authenticated","aal":"aal2"}';
+SELECT content_ciphertext FROM clinical_records LIMIT 1;
+-- ESPERADO: ERROR: permission denied for column content_ciphertext
+SELECT cpf_ciphertext FROM patients LIMIT 1;
+-- ESPERADO: ERROR: permission denied for column cpf_ciphertext
+RESET ROLE;
 ```
 
-### Dados de desenvolvimento (ficticios, >= 18 anos)
-
-Os dados de desenvolvimento requerem:
-1. Criacao de auth.users via Supabase Dashboard ou CLI
-2. Geracao de campos criptografados pelo modulo `src/lib/crypto/` da aplicacao
-
-**Procedimento:**
-1. Criar auth users (psicologa + 3 pacientes ficticios) via Dashboard
-2. Executar seed script da aplicacao que chama as funcoes de criptografia
-3. Inserir sessoes em varios estados (scheduled, completed, cancelled)
-4. Inserir cobrancas em varios estados (pending, paid, overdue, refunded)
-5. Inserir consentimentos aceitos
-6. Inserir registros de audit log
-
-**Pacientes ficticios (exemplo):**
-- Ana Silva, nascida 1990-03-15 (36 anos), status active
-- Bruno Santos, nascido 1985-07-22 (41 anos), status active
-- Carla Oliveira, nascida 1998-11-08 (27 anos), status invited
-
-**Ressalva:** Seed NUNCA contem dado real de paciente. CPFs ficticios gerados por algoritmo de validacao (ex: 123.456.789-09).
-
----
-
-## Verificacoes Executaveis (Requisito 32)
-
-### V1. Nenhuma tabela sem RLS
+### V8. log_audit ownership (A1)
 
 ```sql
-SELECT tablename
-FROM pg_tables
-WHERE schemaname = 'public'
-  AND rowsecurity = false;
--- Resultado esperado: 0 linhas
+SET ROLE authenticated;
+SET request.jwt.claim.sub = '<patient_uid>';
+SELECT log_audit('<OUTRO_patient_id>'::UUID, 'PURGE_RECORD');
+-- ESPERADO: ERROR: patient can only log actions on own record
+RESET ROLE;
 ```
 
-### V2. audit_log com FORCE ROW LEVEL SECURITY
+### V9. consents append-only (A3)
 
 ```sql
-SELECT relname
-FROM pg_class
-WHERE relname = 'audit_log'
-  AND relforcerowsecurity = false;
--- Resultado esperado: 0 linhas
+UPDATE consents SET action = 'revoke' WHERE id = (SELECT id FROM consents LIMIT 1);
+-- ESPERADO: ERROR: consents is append-only
+DELETE FROM consents WHERE id = (SELECT id FROM consents LIMIT 1);
+-- ESPERADO: ERROR: consents is append-only
 ```
 
-### V3. UPDATE/DELETE/TRUNCATE em audit_log falha
+### V10. retention_until auto-calculo (A2)
 
 ```sql
--- Como service_role:
-UPDATE audit_log SET action = 'TAMPERED' WHERE id = (SELECT id FROM audit_log LIMIT 1);
--- Esperado: EXCEPTION 'audit_log is append-only'
-
-DELETE FROM audit_log WHERE id = (SELECT id FROM audit_log LIMIT 1);
--- Esperado: EXCEPTION 'audit_log is append-only'
-
-TRUNCATE audit_log;
--- Esperado: EXCEPTION 'audit_log is append-only'
+UPDATE patients SET treatment_ended_at = now() WHERE id = '<patient_id>';
+SELECT retention_until FROM patients WHERE id = '<patient_id>';
+-- ESPERADO: retention_until ~ treatment_ended_at + 5 years
+UPDATE patients SET retention_until = now() WHERE id = '<patient_id>';
+-- ESPERADO: ERROR: Cannot reduce retention_until
 ```
 
-### V4. UPDATE em sessions como paciente (authenticated) falha
+### V11. RPCs nao executaveis por anon (B1)
 
 ```sql
--- Como authenticated (paciente):
-UPDATE sessions SET admitted_at = now() WHERE id = '<session_id>';
--- Esperado: ERROR permission denied (REVOKE)
+SET ROLE anon;
+SELECT enter_waiting_room('<session_id>'::UUID);
+-- ESPERADO: ERROR: permission denied for function enter_waiting_room
+RESET ROLE;
 ```
 
-### V5. SELECT de coluna de ciphertext como authenticated falha
+### V12. Hash chain sob concorrencia
 
 ```sql
--- Como authenticated:
-SELECT cpf_ciphertext FROM patients WHERE id = '<patient_id>';
--- Esperado: ERROR permission denied for column cpf_ciphertext
-```
-
-### V6. Verificacao da cadeia de hash
-
-```sql
--- Como psychologist authenticated:
 SELECT * FROM fn_verify_audit_chain();
--- Esperado: is_valid = true, total_entries = valid_entries
+-- ESPERADO: is_valid = true, total_entries = valid_entries
+```
+
+### V13. Maquina monotonica de pagamento
+
+```sql
+UPDATE charges SET status = 'pending' WHERE id = '<charge_id_paid>';
+-- ESPERADO: ERROR: Invalid charge status transition: paid -> pending
 ```
 
 ---
 
-## Decisoes
+## Decisoes (v1.1)
 
 | Decisao | Alternativa descartada | Motivo |
 |---------|----------------------|--------|
-| TEXT + CHECK para todos os enums | PostgreSQL native ENUM | Impossivel remover/renomear valores sem migration destrutiva |
-| profiles.id = auth.users.id | UUID auto-gerado separado | auth.uid() resolve diretamente sem JOIN; padrao Supabase |
-| VIEW_RECORD sincrono (sem outbox) | audit_log_pending drenada por cron | Volume irrelevante (~dezenas/dia); elimina complexidade da tabela outbox e do cron de drenagem |
-| CPF da psicologa criptografado | Plaintext em profiles | Classificado como Confidencial (D16); mesmo padrao do paciente por consistencia |
-| Retencao fixa 5 anos | Retencao variavel 5/20 anos | Emenda E1: pratica nao atende menores. Regra de 20 anos nao modelada |
-| Nao modelar is_minor_at_start | Coluna com calculo de retencao variavel | Emenda E1 torna a coluna desnecessaria |
-| Receipts com CPFs criptografados (snapshot) | CPFs em claro no recibo | Recibo agrega D3+D5; snapshot necessario para desacoplamento do paciente |
-| Recurrence como group_id em sessions | Tabela separada de recurrence rules | Cada ocorrencia e uma linha independente; grupo serve apenas para cancelamento em lote |
-| UNIQUE(patient_id) em subscriptions | Permitir multiplas assinaturas ativas | PRD: "se ja tem assinatura ativa, nao pode criar outra" |
-| current_date em CHECK de idade | Trigger BEFORE INSERT | PostgreSQL aceita current_date em CHECK; re-avaliado em cada INSERT/UPDATE, correto para o caso de uso |
+| TEXT + CHECK para enums | PostgreSQL native ENUM | Impossivel alterar enum em producao |
+| profiles.id = auth.users.id | UUID separado | auth.uid() resolve diretamente |
+| VIEW_RECORD sincrono | Outbox + cron | Volume irrelevante; aprovado no Security Review |
+| CPF da psicologa criptografado | Plaintext | Confidencial (D16); consistencia |
+| Retencao fixa 5 anos | 5/20 variavel | Emenda E1: sem menores |
+| E6 como tabela separada | Extensao de clinical_records | Ciclo de vida diferente (1 por paciente versionavel, nao 1 por sessao); append-only independente; session_id nullable enfraqueceria o modelo |
+| A4: table-level REVOKE + column-level GRANT | Column-level REVOKE | Supabase default privileges podem anular column-level REVOKE; abordagem invertida e a unica confiavel |
+| A3: consents com 3 triggers + FORCE RLS + REVOKE | Apenas RLS sem UPDATE/DELETE | Mesma protecao do audit_log; valor probatorio identico (prova de consentimento) |
 
 ---
 
-## Migrations
-
-Arquivos em `supabase/migrations/`, ordenados por dependencia:
+## Migrations (v1.1)
 
 | Arquivo | Conteudo |
 |---------|----------|
 | `20260909120000_extensions_and_utilities.sql` | pgcrypto, pg_net, fn_update_timestamp |
-| `20260909120100_core_tables.sql` | profiles, patients (com CHECK idade, blind index, trigger retencao) |
-| `20260909120200_sessions.sql` | sessions (room_name, trigger de remarcacao) |
-| `20260909120300_clinical_tables.sql` | clinical_records, clinical_record_versions, anamnesis, session_note_drafts |
-| `20260909120400_financial_tables.sql` | charges (maquina monotonica), subscriptions, payment_webhook_events, receipt_counters, receipts |
-| `20260909120500_compliance_tables.sql` | consents, communication_preferences, email_action_tokens, data_subject_requests |
+| `20260909120100_core_tables.sql` | profiles (E5: sem epsi_status), patients (A2: auto-retention + safer delete block) |
+| `20260909120200_sessions.sql` | sessions (room_name, trigger remarcacao) |
+| `20260909120300_clinical_tables.sql` | clinical_records, clinical_record_versions (M1: append-only triggers), anamnesis, session_note_drafts, fn_block_append_only_mutation, **remote_viability_assessments (E6)** |
+| `20260909120400_financial_tables.sql` | charges (monotonica), subscriptions, webhook_events, receipt_counters, receipts |
+| `20260909120500_compliance_tables.sql` | consents (A3: append-only triggers + FORCE RLS), communication_preferences, email_action_tokens, data_subject_requests |
 | `20260909120600_operational_tables.sql` | session_reminders, billing_rule_events |
-| `20260909120700_audit_log.sql` | audit_log com 4 camadas (RLS+FORCE, triggers, hash chain com serializacao) |
-| `20260909120800_rpc_functions.sql` | log_audit, log_audit_system, enter_waiting_room, admit_patient, cancel_session, fn_verify_audit_chain |
-| `20260909120900_rls_policies.sql` | Todas as policies (uma por operacao por perfil) + triggers de protecao de role |
-| `20260909121000_grants_revokes_indexes.sql` | REVOKE/GRANT + todos os indices |
-| `20260909121100_seed_development.sql` | receipt_counters init + guia de seed |
+| `20260909120700_audit_log.sql` | audit_log com 4 camadas |
+| `20260909120800_rpc_functions.sql` | log_audit (A1: ownership), log_audit_system, enter_waiting_room, admit_patient, cancel_session, **consume_email_token (R19)**, fn_verify_audit_chain |
+| `20260909120900_rls_policies.sql` | Todas as policies + triggers (B2: protecao colunas psicologa) + **E6 policies** |
+| `20260909121000_grants_revokes_indexes.sql` | **A4: table-level REVOKE + column-level GRANT** (8 tabelas), A3: REVOKE on consents, B1: REVOKE anon on RPCs, indices |
+| `20260909121100_seed_development.sql` | receipt_counters init + guia |
 
-**Aplicacao pendente:** Nao existe projeto Supabase provisionado. Migrations escritas e prontas para `supabase db push` apos provisionamento.
+**Aplicacao pendente:** projeto Supabase provisionado (sa-east-1) mas credenciais nao acessiveis por este agente. Orquestrador aplica.
 
 ---
 
@@ -731,4 +339,5 @@ Arquivos em `supabase/migrations/`, ordenados por dependencia:
 
 | Versao | Data | Mudanca |
 |--------|------|---------|
-| 1.0 | 2026-09-09 | Versao inicial: 19 tabelas, 7 RPCs SECURITY DEFINER, 4 camadas de audit log, envelope encryption em 4 tabelas, 32 requisitos da secao 17 absorvidos |
+| 1.0 | 2026-09-09 | Versao inicial: 19 tabelas, 32 requisitos absorvidos |
+| 1.1 | 2026-09-09 | Patches do Security Review (A1-A4, M1, B1-B2, R19) + Emendas E5-E8. 20 tabelas, 8 RPCs SD. Fecha 4 requisitos parciais (R11, R12, R14, R19). E5: remove epsi_status. E6: nova tabela remote_viability_assessments. E7: sem mudanca de schema. E8: nenhuma vedacao automatica |

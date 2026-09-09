@@ -4,19 +4,21 @@
 -- Convention: [table]_[operation]_[who]
 -- Every table has RLS enabled (done in table creation).
 -- Every cell in the RLS matrix is an explicit decision.
+--
+-- Patches applied:
+--   B2: trigger preventing patients from writing psychologist columns
+--   E6: remote_viability_assessments policies
 
 -- ============================================================
 -- profiles
 -- ============================================================
 
--- Psychologist sees all profiles (needs patient list)
 CREATE POLICY profiles_select_psychologist ON profiles
   FOR SELECT TO authenticated
   USING (
     EXISTS (SELECT 1 FROM profiles p WHERE p.id = auth.uid() AND p.role = 'psychologist')
   );
 
--- Patient sees own profile + psychologist profile (for CRP display)
 CREATE POLICY profiles_select_patient_own ON profiles
   FOR SELECT TO authenticated
   USING (
@@ -24,14 +26,10 @@ CREATE POLICY profiles_select_patient_own ON profiles
     OR role = 'psychologist'
   );
 
--- Any authenticated user can update own profile (except role column - enforced below)
 CREATE POLICY profiles_update_own ON profiles
   FOR UPDATE TO authenticated
   USING (id = auth.uid())
   WITH CHECK (id = auth.uid());
-
--- No INSERT by authenticated (profiles created by server on auth user creation)
--- No DELETE by authenticated
 
 -- Trigger: prevent role column change by any user
 CREATE OR REPLACE FUNCTION fn_profiles_protect_role()
@@ -47,6 +45,32 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER trg_profiles_protect_role
   BEFORE UPDATE ON profiles
   FOR EACH ROW EXECUTE FUNCTION fn_profiles_protect_role();
+
+-- B2: prevent patients from writing psychologist-specific columns
+CREATE OR REPLACE FUNCTION fn_profiles_protect_psychologist_columns()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_role TEXT;
+BEGIN
+  SELECT role INTO v_role FROM profiles WHERE id = auth.uid();
+  IF v_role = 'patient' THEN
+    IF NEW.crp IS DISTINCT FROM OLD.crp
+       OR NEW.crp_region IS DISTINCT FROM OLD.crp_region
+       OR NEW.specialty IS DISTINCT FROM OLD.specialty
+       OR NEW.default_session_value IS DISTINCT FROM OLD.default_session_value
+       OR NEW.cancellation_policy_hours IS DISTINCT FROM OLD.cancellation_policy_hours
+       OR NEW.cpf_ciphertext IS DISTINCT FROM OLD.cpf_ciphertext
+    THEN
+      RAISE EXCEPTION 'Patient cannot modify psychologist-specific fields';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_profiles_protect_psychologist_columns
+  BEFORE UPDATE ON profiles
+  FOR EACH ROW EXECUTE FUNCTION fn_profiles_protect_psychologist_columns();
 
 -- Trigger: sync role to auth.users app_metadata (Requirement 13)
 CREATE OR REPLACE FUNCTION fn_profiles_sync_role_metadata()
@@ -67,26 +91,20 @@ CREATE TRIGGER trg_profiles_sync_role_metadata
 -- patients
 -- ============================================================
 
--- Psychologist sees all patients
 CREATE POLICY patients_select_psychologist ON patients
   FOR SELECT TO authenticated
   USING (
     EXISTS (SELECT 1 FROM profiles p WHERE p.id = auth.uid() AND p.role = 'psychologist')
   );
 
--- Patient sees own record
 CREATE POLICY patients_select_patient_own ON patients
   FOR SELECT TO authenticated
   USING (user_id = auth.uid());
-
--- No INSERT/UPDATE/DELETE by authenticated on patients
--- (created via service_role in Server Action, updated via RPCs)
 
 -- ============================================================
 -- sessions
 -- ============================================================
 
--- Psychologist sees all their sessions
 CREATE POLICY sessions_select_psychologist ON sessions
   FOR SELECT TO authenticated
   USING (
@@ -94,16 +112,11 @@ CREATE POLICY sessions_select_psychologist ON sessions
     AND EXISTS (SELECT 1 FROM profiles p WHERE p.id = auth.uid() AND p.role = 'psychologist')
   );
 
--- Patient sees own sessions
 CREATE POLICY sessions_select_patient_own ON sessions
   FOR SELECT TO authenticated
   USING (
     EXISTS (SELECT 1 FROM patients pt WHERE pt.id = patient_id AND pt.user_id = auth.uid())
   );
-
--- No INSERT/UPDATE/DELETE policies for authenticated/anon on sessions
--- All mutations via SECURITY DEFINER RPCs or service_role
--- (Requirement 6: REVOKE UPDATE applied in grants_revokes migration)
 
 -- ============================================================
 -- clinical_records (Requirement 28)
@@ -136,8 +149,6 @@ CREATE POLICY clinical_records_update_psychologist ON clinical_records
     AND (auth.jwt()->>'aal') = 'aal2'
   );
 
--- No DELETE policy (soft delete only, controlled by application)
-
 -- ============================================================
 -- clinical_record_versions (same as clinical_records)
 -- ============================================================
@@ -149,7 +160,6 @@ CREATE POLICY clinical_record_versions_select_psychologist ON clinical_record_ve
     AND (auth.jwt()->>'aal') = 'aal2'
   );
 
--- Insert only (append-only)
 CREATE POLICY clinical_record_versions_insert_psychologist ON clinical_record_versions
   FOR INSERT TO authenticated
   WITH CHECK (
@@ -160,8 +170,6 @@ CREATE POLICY clinical_record_versions_insert_psychologist ON clinical_record_ve
 
 -- ============================================================
 -- anamnesis (Requirement 28)
--- Patient has INSERT/UPDATE/SELECT own (without ciphertext columns)
--- Psychologist has SELECT. aal2 required for psychologist.
 -- ============================================================
 
 CREATE POLICY anamnesis_select_psychologist ON anamnesis
@@ -169,13 +177,11 @@ CREATE POLICY anamnesis_select_psychologist ON anamnesis
   USING (
     EXISTS (
       SELECT 1 FROM patients pt
-      WHERE pt.id = anamnesis.patient_id
-        AND pt.psychologist_id = auth.uid()
+      WHERE pt.id = anamnesis.patient_id AND pt.psychologist_id = auth.uid()
     )
     AND (auth.jwt()->>'aal') = 'aal2'
   );
 
--- Patient can see own anamnesis metadata (ciphertext columns REVOKEd separately)
 CREATE POLICY anamnesis_select_patient_own ON anamnesis
   FOR SELECT TO authenticated
   USING (
@@ -197,26 +203,17 @@ CREATE POLICY anamnesis_update_patient ON anamnesis
     EXISTS (SELECT 1 FROM patients pt WHERE pt.id = patient_id AND pt.user_id = auth.uid())
   );
 
--- No DELETE policy (retention-protected)
-
 -- ============================================================
--- session_note_drafts (Requirement 23)
--- Only psychologist - NO SELECT for patient. aal2.
+-- session_note_drafts (Requirement 23) — psychologist only, aal2
 -- ============================================================
 
 CREATE POLICY session_note_drafts_select_psychologist ON session_note_drafts
   FOR SELECT TO authenticated
-  USING (
-    psychologist_id = auth.uid()
-    AND (auth.jwt()->>'aal') = 'aal2'
-  );
+  USING (psychologist_id = auth.uid() AND (auth.jwt()->>'aal') = 'aal2');
 
 CREATE POLICY session_note_drafts_insert_psychologist ON session_note_drafts
   FOR INSERT TO authenticated
-  WITH CHECK (
-    psychologist_id = auth.uid()
-    AND (auth.jwt()->>'aal') = 'aal2'
-  );
+  WITH CHECK (psychologist_id = auth.uid() AND (auth.jwt()->>'aal') = 'aal2');
 
 CREATE POLICY session_note_drafts_update_psychologist ON session_note_drafts
   FOR UPDATE TO authenticated
@@ -226,6 +223,28 @@ CREATE POLICY session_note_drafts_update_psychologist ON session_note_drafts
 CREATE POLICY session_note_drafts_delete_psychologist ON session_note_drafts
   FOR DELETE TO authenticated
   USING (psychologist_id = auth.uid() AND (auth.jwt()->>'aal') = 'aal2');
+
+-- ============================================================
+-- remote_viability_assessments (E6)
+-- Same pattern as clinical_records: psychologist only, aal2
+-- ============================================================
+
+CREATE POLICY viability_select_psychologist ON remote_viability_assessments
+  FOR SELECT TO authenticated
+  USING (
+    psychologist_id = auth.uid()
+    AND (auth.jwt()->>'aal') = 'aal2'
+  );
+
+CREATE POLICY viability_insert_psychologist ON remote_viability_assessments
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    psychologist_id = auth.uid()
+    AND EXISTS (SELECT 1 FROM profiles p WHERE p.id = auth.uid() AND p.role = 'psychologist')
+    AND (auth.jwt()->>'aal') = 'aal2'
+  );
+
+-- No UPDATE/DELETE: append-only (triggers block)
 
 -- ============================================================
 -- charges
@@ -244,8 +263,6 @@ CREATE POLICY charges_select_patient_own ON charges
     EXISTS (SELECT 1 FROM patients pt WHERE pt.id = patient_id AND pt.user_id = auth.uid())
   );
 
--- No INSERT/UPDATE/DELETE for authenticated (managed by server/edge functions)
-
 -- ============================================================
 -- subscriptions
 -- ============================================================
@@ -262,12 +279,10 @@ CREATE POLICY subscriptions_select_patient_own ON subscriptions
 
 -- ============================================================
 -- payment_webhook_events - NO policies for authenticated
--- (written by Edge Function with service_role)
 -- ============================================================
 
 -- ============================================================
 -- receipt_counters - NO policies for authenticated
--- (used internally by receipt creation transaction)
 -- ============================================================
 
 -- ============================================================
@@ -285,7 +300,7 @@ CREATE POLICY receipts_select_patient_own ON receipts
   );
 
 -- ============================================================
--- consents (append-only, no UPDATE/DELETE)
+-- consents (append-only: INSERT only, no UPDATE/DELETE)
 -- ============================================================
 
 CREATE POLICY consents_select_psychologist ON consents
@@ -306,8 +321,6 @@ CREATE POLICY consents_insert_patient ON consents
     EXISTS (SELECT 1 FROM patients pt WHERE pt.id = patient_id AND pt.user_id = auth.uid())
   );
 
--- No UPDATE or DELETE policies (append-only)
-
 -- ============================================================
 -- communication_preferences
 -- ============================================================
@@ -327,7 +340,6 @@ CREATE POLICY comm_prefs_update_patient ON communication_preferences
 
 -- ============================================================
 -- email_action_tokens - NO policies (Requirement 19)
--- Access ONLY via SECURITY DEFINER RPCs
 -- ============================================================
 
 -- ============================================================
@@ -359,10 +371,7 @@ CREATE POLICY dsr_insert_patient ON data_subject_requests
 CREATE POLICY session_reminders_select_psychologist ON session_reminders
   FOR SELECT TO authenticated
   USING (
-    EXISTS (
-      SELECT 1 FROM sessions s
-      WHERE s.id = session_id AND s.psychologist_id = auth.uid()
-    )
+    EXISTS (SELECT 1 FROM sessions s WHERE s.id = session_id AND s.psychologist_id = auth.uid())
   );
 
 -- ============================================================
@@ -372,16 +381,11 @@ CREATE POLICY session_reminders_select_psychologist ON session_reminders
 CREATE POLICY billing_rule_events_select_psychologist ON billing_rule_events
   FOR SELECT TO authenticated
   USING (
-    EXISTS (
-      SELECT 1 FROM charges c
-      WHERE c.id = charge_id AND c.psychologist_id = auth.uid()
-    )
+    EXISTS (SELECT 1 FROM charges c WHERE c.id = charge_id AND c.psychologist_id = auth.uid())
   );
 
 -- ============================================================
 -- audit_log (Layer 1 - Requirement 3)
--- SELECT only for psychologist. No INSERT/UPDATE/DELETE policies.
--- INSERT via SECURITY DEFINER functions only.
 -- ============================================================
 
 CREATE POLICY audit_log_select_psychologist ON audit_log
@@ -389,5 +393,3 @@ CREATE POLICY audit_log_select_psychologist ON audit_log
   USING (
     EXISTS (SELECT 1 FROM profiles p WHERE p.id = auth.uid() AND p.role = 'psychologist')
   );
-
--- No INSERT/UPDATE/DELETE policies = denied by default
