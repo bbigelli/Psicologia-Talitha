@@ -60,7 +60,7 @@ CREATE TRIGGER trg_clinical_records_updated_at
 -- Block DELETE during retention
 CREATE TRIGGER trg_clinical_records_block_delete
   BEFORE DELETE ON clinical_records
-  FOR EACH ROW EXECUTE FUNCTION fn_block_delete_during_retention();
+  FOR EACH ROW EXECUTE FUNCTION fn_block_delete_clinical_retention();
 
 -- ============================================================
 -- clinical_record_versions
@@ -141,7 +141,7 @@ CREATE TRIGGER trg_anamnesis_updated_at
 
 CREATE TRIGGER trg_anamnesis_block_delete
   BEFORE DELETE ON anamnesis
-  FOR EACH ROW EXECUTE FUNCTION fn_block_delete_during_retention();
+  FOR EACH ROW EXECUTE FUNCTION fn_block_delete_clinical_retention();
 
 -- ============================================================
 -- session_note_drafts
@@ -232,4 +232,4 @@ CREATE TRIGGER trg_viability_no_update
 
 CREATE TRIGGER trg_viability_no_delete
   BEFORE DELETE ON remote_viability_assessments
-  FOR EACH ROW EXECUTE FUNCTION fn_block_delete_during_retention();
+  FOR EACH ROW EXECUTE FUNCTION fn_block_delete_clinical_retention();

@@ -4,6 +4,9 @@
 -- Patches applied:
 --   E5: removed epsi_status column (e-Psi desativado, Res. CFP 09/2024)
 --   A2: auto-calculate retention_until + safer fn_block_delete_during_retention
+--   N1: split retention delete blocker into two functions — one for
+--       patients (has treatment_ended_at) and one for clinical tables
+--       (resolves treatment_ended_at via patient_id JOIN)
 
 -- ============================================================
 -- profiles
@@ -96,18 +99,13 @@ CREATE TRIGGER trg_patients_updated_at
 
 -- ============================================================
 -- A2: Auto-calculate retention_until when treatment_ended_at is set
--- Prevents the application from "forgetting" to set it, which
--- would leave retention_until NULL and the DELETE trigger inert.
--- Also prevents manual reduction of retention_until.
 -- ============================================================
 CREATE OR REPLACE FUNCTION fn_patients_set_retention()
 RETURNS TRIGGER AS $$
 BEGIN
-  -- Auto-calculate when treatment ends
   IF NEW.treatment_ended_at IS NOT NULL AND OLD.treatment_ended_at IS NULL THEN
     NEW.retention_until := NEW.treatment_ended_at + interval '5 years';
   END IF;
-  -- Prevent manual reduction of retention_until
   IF OLD.retention_until IS NOT NULL
      AND NEW.retention_until IS DISTINCT FROM OLD.retention_until
      AND NEW.retention_until < OLD.retention_until THEN
@@ -123,14 +121,24 @@ CREATE TRIGGER trg_patients_set_retention
   FOR EACH ROW EXECUTE FUNCTION fn_patients_set_retention();
 
 -- ============================================================
--- A2: Safer fn_block_delete_during_retention
--- Now also blocks DELETE when treatment ended but retention_until
--- was not calculated (safety net for edge cases).
+-- N1 FIX: Two separate retention-delete functions
+--
+-- fn_block_delete_patient_retention — for patients table only
+--   Reads OLD.treatment_ended_at and OLD.retention_until directly
+--   (both columns exist on patients).
+--
+-- fn_block_delete_clinical_retention — for clinical tables
+--   (clinical_records, anamnesis, remote_viability_assessments)
+--   These tables have retention_until and patient_id but NOT
+--   treatment_ended_at. The safety-net check resolves
+--   treatment_ended_at via JOIN to patients.
 -- ============================================================
-CREATE OR REPLACE FUNCTION fn_block_delete_during_retention()
+
+-- For patients table: columns exist directly on the row
+CREATE OR REPLACE FUNCTION fn_block_delete_patient_retention()
 RETURNS TRIGGER AS $$
 BEGIN
-  -- If treatment ended but retention_until not set, block as safety net
+  -- Safety net: treatment ended but retention_until not calculated
   IF OLD.retention_until IS NULL AND OLD.treatment_ended_at IS NOT NULL THEN
     RAISE EXCEPTION 'retention_until not set after treatment end — cannot delete safely';
   END IF;
@@ -144,4 +152,39 @@ $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER trg_patients_block_delete
   BEFORE DELETE ON patients
-  FOR EACH ROW EXECUTE FUNCTION fn_block_delete_during_retention();
+  FOR EACH ROW EXECUTE FUNCTION fn_block_delete_patient_retention();
+
+-- For clinical tables: resolve treatment_ended_at via patient_id
+CREATE OR REPLACE FUNCTION fn_block_delete_clinical_retention()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_patient_treatment_ended TIMESTAMPTZ;
+  v_patient_retention       TIMESTAMPTZ;
+BEGIN
+  -- Check the row's own retention_until first (if populated)
+  IF OLD.retention_until IS NOT NULL AND OLD.retention_until > now() THEN
+    RAISE EXCEPTION 'Cannot delete % record during retention period (until %)',
+      TG_TABLE_NAME, OLD.retention_until;
+  END IF;
+
+  -- Safety net: look up the patient's retention state
+  -- Even if this row's retention_until is NULL, the patient's
+  -- treatment may have ended with retention still active
+  SELECT treatment_ended_at, retention_until
+  INTO v_patient_treatment_ended, v_patient_retention
+  FROM patients
+  WHERE id = OLD.patient_id;
+
+  IF v_patient_retention IS NOT NULL AND v_patient_retention > now() THEN
+    RAISE EXCEPTION 'Cannot delete % record — patient retention active (until %)',
+      TG_TABLE_NAME, v_patient_retention;
+  END IF;
+
+  IF v_patient_treatment_ended IS NOT NULL AND v_patient_retention IS NULL THEN
+    RAISE EXCEPTION 'Cannot delete % record — patient treatment ended but retention_until not set',
+      TG_TABLE_NAME;
+  END IF;
+
+  RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;

@@ -1,6 +1,6 @@
 # Data Architecture: Talitha Psicologia
 
-**Versao:** 1.1
+**Versao:** 1.2
 **Data:** 2026-09-09
 **Referencia:** `docs/talitha-architecture.md` (v1.1, secao 17), `docs/talitha-security-review-architecture.md` (secao 4), `docs/talitha-security-review-schema.md` (patches A1-A4, M1, B1-B2, R19), `docs/talitha-security-review-prd.md`, `docs/talitha-prd.md` (emendas E1-E8), `docs/adr/ADR-0001..0006`, `CLAUDE.md`, `docs/decisions.md`
 
@@ -74,7 +74,7 @@ erDiagram
 - `CHECK (date_of_birth <= current_date - interval '18 years')` (Requisito 18)
 - `cpf_hmac UNIQUE` (blind index HMAC-SHA256 chaveado)
 - A2: Trigger `trg_patients_set_retention` auto-calcula `retention_until = treatment_ended_at + 5 years` e impede reducao manual
-- A2: `fn_block_delete_during_retention` tambem bloqueia DELETE quando `treatment_ended_at IS NOT NULL AND retention_until IS NULL` (safety net)
+- A2: `fn_block_delete_patient_retention` bloqueia DELETE quando `treatment_ended_at IS NOT NULL AND retention_until IS NULL` (safety net)
 - A4: REVOKE ALL table-level + GRANT SELECT column-level (colunas cifradas inacessiveis)
 
 ### 3. sessions
@@ -186,7 +186,8 @@ UNIQUE constraints de banco para idempotencia.
 | `fn_sessions_on_reschedule` | sessions | BEFORE UPDATE | Regenera room_name, zera waiting/admitted |
 | `fn_charges_monotonic_status` | charges | BEFORE UPDATE OF status | Impede regressao de status |
 | `fn_patients_set_retention` | patients | BEFORE UPDATE | A2: auto-calcula retention_until, impede reducao |
-| `fn_block_delete_during_retention` | patients, clinical_records, anamnesis, remote_viability | BEFORE DELETE | Bloqueia DELETE durante retencao + safety net |
+| `fn_block_delete_patient_retention` | patients | BEFORE DELETE | Bloqueia DELETE de paciente durante retencao (lê treatment_ended_at direto) |
+| `fn_block_delete_clinical_retention` | clinical_records, anamnesis, remote_viability | BEFORE DELETE | N1: bloqueia DELETE clinico durante retencao (resolve treatment_ended_at via patient_id JOIN) |
 | `fn_block_append_only_mutation` | consents, clinical_record_versions, remote_viability | UPDATE/DELETE/TRUNCATE | Impede mutacao em registros de compliance |
 | `fn_audit_log_block_mutation` | audit_log | UPDATE/DELETE/TRUNCATE | Imutabilidade do audit log |
 | `fn_audit_log_hash_chain` | audit_log | BEFORE INSERT | Hash chain com pg_advisory_xact_lock |
@@ -297,6 +298,24 @@ UPDATE charges SET status = 'pending' WHERE id = '<charge_id_paid>';
 -- ESPERADO: ERROR: Invalid charge status transition: paid -> pending
 ```
 
+
+### V14. Retention delete blocker funciona corretamente em tabelas clinicas (N1)
+
+```sql
+-- Cenario 1: DELETE de clinical_records com retencao ativa no paciente
+-- (simular com service_role apos setar treatment_ended_at)
+DELETE FROM clinical_records WHERE id = '<record_id>';
+-- ESPERADO: ERROR: Cannot delete clinical_records record — patient retention active
+
+-- Cenario 2: DELETE de clinical_records APOS retencao expirar
+-- (simular com retention_until no passado)
+DELETE FROM clinical_records WHERE id = '<record_id_expired>';
+-- ESPERADO: sucesso (RETURN OLD)
+
+-- Cenario 3: DELETE de anamnesis com tratamento encerrado mas retention_until NULL
+DELETE FROM anamnesis WHERE id = '<anamnesis_id>';
+-- ESPERADO: ERROR: Cannot delete anamnesis record — patient treatment ended but retention_until not set
+```
 ---
 
 ## Decisoes (v1.1)
@@ -341,3 +360,4 @@ UPDATE charges SET status = 'pending' WHERE id = '<charge_id_paid>';
 |--------|------|---------|
 | 1.0 | 2026-09-09 | Versao inicial: 19 tabelas, 32 requisitos absorvidos |
 | 1.1 | 2026-09-09 | Patches do Security Review (A1-A4, M1, B1-B2, R19) + Emendas E5-E8. 20 tabelas, 8 RPCs SD. Fecha 4 requisitos parciais (R11, R12, R14, R19). E5: remove epsi_status. E6: nova tabela remote_viability_assessments. E7: sem mudanca de schema. E8: nenhuma vedacao automatica |
+| 1.2 | 2026-09-09 | N1: fn_block_delete_during_retention dividida em fn_block_delete_patient_retention (patients) e fn_block_delete_clinical_retention (tabelas clinicas via patient_id JOIN). Corrige referencia a coluna inexistente. V14 adicionada. |
