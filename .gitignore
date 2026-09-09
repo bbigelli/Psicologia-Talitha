@@ -1,7 +1,40 @@
+# dependencies
 node_modules/
+.pnp
+.pnp.*
+
+# next.js
 .next/
-.env
-.env.local
+out/
+
+# production
+build/
+
+# environment variables
+.env*
+!.env.example
+
+# credentials (git-ignored doc with real secrets)
 docs/credentials.md
+
+# misc
 .DS_Store
 *.log
+*.pem
+*.tsbuildinfo
+next-env.d.ts
+
+# debug
+npm-debug.log*
+
+# supabase temp
+supabase/.temp/
+
+# vercel
+.vercel
+
+# ide
+.idea/
+.vscode/
+*.swp
+*.swo
