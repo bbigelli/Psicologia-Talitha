@@ -1,6 +1,6 @@
 # Data Architecture: Talitha Psicologia
 
-**Versao:** 1.2
+**Versao:** 1.3
 **Data:** 2026-09-09
 **Referencia:** `docs/talitha-architecture.md` (v1.1, secao 17), `docs/talitha-security-review-architecture.md` (secao 4), `docs/talitha-security-review-schema.md` (patches A1-A4, M1, B1-B2, R19), `docs/talitha-security-review-prd.md`, `docs/talitha-prd.md` (emendas E1-E8), `docs/adr/ADR-0001..0006`, `CLAUDE.md`, `docs/decisions.md`
 
@@ -275,12 +275,18 @@ UPDATE patients SET retention_until = now() WHERE id = '<patient_id>';
 -- ESPERADO: ERROR: Cannot reduce retention_until
 ```
 
-### V11. RPCs nao executaveis por anon (B1)
+### V11. RPCs nao executaveis por anon (F2 — teste funcional, nao catalogo)
 
 ```sql
+-- Teste FUNCIONAL, nao declarativo. A versao anterior consultava
+-- o catalogo de grants e dava falso positivo porque o privilegio
+-- efetivo vinha de PUBLIC, nao de um grant direto a anon.
 SET ROLE anon;
-SELECT enter_waiting_room('<session_id>'::UUID);
--- ESPERADO: ERROR: permission denied for function enter_waiting_room
+SELECT enter_waiting_room(gen_random_uuid());
+-- ESPERADO: ERROR 42501 (permission denied for function enter_waiting_room)
+-- Se receber P0001 (excecao PL/pgSQL) em vez de 42501, o REVOKE FROM PUBLIC nao foi aplicado.
+SELECT fn_verify_audit_chain();
+-- ESPERADO: ERROR 42501
 RESET ROLE;
 ```
 
@@ -316,9 +322,41 @@ DELETE FROM clinical_records WHERE id = '<record_id_expired>';
 DELETE FROM anamnesis WHERE id = '<anamnesis_id>';
 -- ESPERADO: ERROR: Cannot delete anamnesis record — patient treatment ended but retention_until not set
 ```
+
+### V15. fn_verify_audit_chain bloqueada para anon (F1)
+
+```sql
+-- Prova que a correcao F1 (NULL-safe) funciona:
+-- anon nao tem auth.uid(), v_uid e NULL, v_role e NULL,
+-- e a funcao deve rejeitar ANTES de acessar qualquer dado.
+SET ROLE anon;
+SELECT * FROM fn_verify_audit_chain();
+-- ESPERADO: ERROR 42501 (permission denied — F2 bloqueia antes)
+-- OU se F2 nao se aplicar: ERROR P0001 (Only the psychologist can verify)
+-- O que NAO pode acontecer: retorno de linhas com metadados do audit log.
+RESET ROLE;
+```
+
+### V16. INSERT no audit_log grava com hash chain (F3)
+
+```sql
+-- Prova que extensions.digest() resolve corretamente no
+-- search_path fixo da funcao SECURITY DEFINER.
+-- Como psychologist autenticado:
+SELECT log_audit(NULL, 'SYSTEM_TEST');
+-- ESPERADO: retorna UUID (nao falha com "function digest does not exist")
+
+SELECT id, action, row_hash IS NOT NULL AS has_hash,
+       prev_hash IS NULL AS is_first_entry
+FROM audit_log ORDER BY created_at DESC LIMIT 1;
+-- ESPERADO: action = SYSTEM_TEST, has_hash = true
+
+-- Limpar entrada de teste:
+-- (nao possivel — audit_log e append-only. Entrada permanece como prova.)
+```
 ---
 
-## Decisoes (v1.1)
+## Decisoes (v1.3)
 
 | Decisao | Alternativa descartada | Motivo |
 |---------|----------------------|--------|
@@ -331,9 +369,10 @@ DELETE FROM anamnesis WHERE id = '<anamnesis_id>';
 | A4: table-level REVOKE + column-level GRANT | Column-level REVOKE | Supabase default privileges podem anular column-level REVOKE; abordagem invertida e a unica confiavel |
 | A3: consents com 3 triggers + FORCE RLS + REVOKE | Apenas RLS sem UPDATE/DELETE | Mesma protecao do audit_log; valor probatorio identico (prova de consentimento) |
 
+| F2: REVOKE FROM PUBLIC, nao de role | REVOKE FROM anon (ineficaz) | Em PostgreSQL, funcoes recebem EXECUTE para PUBLIC por padrao na criacao. REVOKE de role nao remove privilegio herdado de PUBLIC. Deve-se REVOKE FROM PUBLIC + GRANT explicito |
 ---
 
-## Migrations (v1.1)
+## Migrations (v1.3)
 
 | Arquivo | Conteudo |
 |---------|----------|
@@ -349,8 +388,9 @@ DELETE FROM anamnesis WHERE id = '<anamnesis_id>';
 | `20260909120900_rls_policies.sql` | Todas as policies + triggers (B2: protecao colunas psicologa) + **E6 policies** |
 | `20260909121000_grants_revokes_indexes.sql` | **A4: table-level REVOKE + column-level GRANT** (8 tabelas), A3: REVOKE on consents, B1: REVOKE anon on RPCs, indices |
 | `20260909121100_seed_development.sql` | receipt_counters init + guia |
+| `20260909121200_patch_f1_f2_f3.sql` | **F1:** NULL-safe comparisons em 8 RPCs (IS DISTINCT FROM). **F2:** REVOKE EXECUTE FROM PUBLIC + GRANT explicito. **F3:** extensions.digest() e extensions.gen_random_bytes() em 3 funcoes SD |
 
-**Aplicacao pendente:** projeto Supabase provisionado (sa-east-1) mas credenciais nao acessiveis por este agente. Orquestrador aplica.
+**12 migrations originais aplicadas no banco. Migration 13 (patch F1-F2-F3) pendente de aplicacao pelo orquestrador.
 
 ---
 
@@ -361,3 +401,4 @@ DELETE FROM anamnesis WHERE id = '<anamnesis_id>';
 | 1.0 | 2026-09-09 | Versao inicial: 19 tabelas, 32 requisitos absorvidos |
 | 1.1 | 2026-09-09 | Patches do Security Review (A1-A4, M1, B1-B2, R19) + Emendas E5-E8. 20 tabelas, 8 RPCs SD. Fecha 4 requisitos parciais (R11, R12, R14, R19). E5: remove epsi_status. E6: nova tabela remote_viability_assessments. E7: sem mudanca de schema. E8: nenhuma vedacao automatica |
 | 1.2 | 2026-09-09 | N1: fn_block_delete_during_retention dividida em fn_block_delete_patient_retention (patients) e fn_block_delete_clinical_retention (tabelas clinicas via patient_id JOIN). Corrige referencia a coluna inexistente. V14 adicionada. |
+| 1.3 | 2026-09-09 | F1: NULL-safety em 8 RPCs/triggers (IS DISTINCT FROM). F2: REVOKE FROM PUBLIC + GRANT explicito em 8 funcoes. F3: schema-qualify pgcrypto (extensions.digest, extensions.gen_random_bytes) em 3 funcoes SD. V11 reescrita (teste funcional). V15-V16 adicionadas. Licao F2 registrada nas decisoes. |
