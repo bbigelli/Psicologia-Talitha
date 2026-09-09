@@ -1,0 +1,7 @@
+node_modules/
+.next/
+.env
+.env.local
+docs/credentials.md
+.DS_Store
+*.log
