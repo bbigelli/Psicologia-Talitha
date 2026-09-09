@@ -1,4 +1,13 @@
 # User Stories: Talitha Psicologia
+> ## ⚠️ AVISO DE PRECEDÊNCIA — leia antes de implementar qualquer item deste documento
+>
+> Este documento foi escrito antes das **Emendas E5 a E8** do PRD (`docs/talitha-prd.md`, seção no topo). Elas têm precedência sobre qualquer trecho aqui.
+>
+> - **Toda menção a "e-Psi" neste arquivo é obsoleta.** A Resolução CFP nº 09/2024 revogou o cadastro e-Psi e a plataforma foi desativada em 31/08/2024. Não implemente campo, validação, tela ou requisito de e-Psi. O CRP ativo continua obrigatório.
+> - **Em vez disso, existe um requisito novo (E6):** registro datado de **viabilidade técnica do atendimento remoto** no prontuário — veredicto de adequação, justificativa e data, tratado como conteúdo clínico (cifrado, append-only). É o item que protege a psicóloga perante o CRP.
+> - **O termo de consentimento (E7)** deve cobrir formato online, política de faltas e queda de conexão.
+> - **Nenhuma validação automática de "caso inelegível" (E8)** — as vedações de atendimento em crise, emergência, violência e desastre foram revogadas; a decisão é clínica e fica registrada via E6.
+
 
 **Versao:** 1.0
 **Data:** 2026-09-09

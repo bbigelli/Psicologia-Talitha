@@ -13,6 +13,23 @@ Plataforma web para psicologa que atende exclusivamente online, substituindo fer
 
 ---
 
+---
+
+## ⚠️ EMENDAS DO DESENVOLVEDOR (2026-09-09) — PRECEDÊNCIA SOBRE O RESTO DESTE DOCUMENTO
+
+Decisões tomadas pelo dev após o Security Review do PRD. **Sobrescrevem qualquer trecho em conflito abaixo.** Agentes downstream (Design, Architect, Data Architect, Backlog) devem seguir estas emendas, não o texto original.
+
+| # | Emenda | Efeito prático |
+|---|--------|----------------|
+| **E1** | **A Talitha não atende pacientes menores de 18 anos** — nem no MVP, nem em versão futura. | **Persona 3 (Responsável Legal) está removida do produto.** O cadastro de paciente valida idade ≥ 18 e bloqueia menores com mensagem clara. Retenção de prontuário é **fixa em 5 anos** — a regra CFP de 20 anos não se aplica e **não deve ser modelada** no schema. Recibo IRPF sempre no CPF do próprio paciente. Não existe fluxo de aceite de responsável legal. **Resolve o issue Crítico C1 do Security Review.** |
+| **E2** | **MFA TOTP é obrigatório para a psicóloga.** | Confirma a recomendação do Security Review contra a decisão original do PO. A conta dela dá acesso ao prontuário de todos os pacientes — senha isolada não é defensável perante o CRP em caso de invasão. MFA para paciente fica fora do MVP. |
+| **E3** | Lembretes anti-no-show por **e-mail** no MVP. | WhatsApp Cloud API reavaliada em v1.1 conforme taxa de abertura real. |
+| **E4** | **Landing page pública fora do MVP.** | Entra como sprint complementar depois que o app estiver operando. |
+| **E5** | **O cadastro e-Psi NÃO é mais exigido.** A Resolução CFP nº 09/2024 substituiu as Resoluções 11/2018 e 04/2020 e revogou a obrigatoriedade; a plataforma e-Psi foi desativada em 31/08/2024. | Remover e-Psi de todo requisito, tela e validação. O CRP ativo continua obrigatório (CRP-06 da profissional, já em `docs/credentials.md`). Toda menção a e-Psi neste PRD, nos security reviews e no CLAUDE.md é **histórica e não deve ser implementada**. |
+| **E6** | **Requisito NOVO da Resolução 09/2024 — registro datado de viabilidade técnica.** A norma desloca a decisão para a avaliação técnica da própria psicóloga, que passa a responder diretamente pelos critérios usados, e exige que **a avaliação de viabilidade do atendimento remoto seja registrada no prontuário, com data**. | O prontuário precisa de um registro estruturado por paciente: veredicto de adequação ao formato remoto, justificativa e data, versionado como conteúdo clínico (cifrado, append-only). Não é campo livre opcional — é o documento que protege a psicóloga perante o CRP. Substitui o e-Psi como o item de conformidade CFP do produto. |
+| **E7** | **Termo de consentimento deve cobrir formato online, política de faltas e queda de conexão.** Exigência do contrato terapêutico sob a Resolução 09/2024. | As cláusulas entram no texto do termo aceito pelo paciente (US-004/US-005), versionadas com hash como já previsto. |
+| **E8** | **As vedações automáticas de atendimento remoto foram revogadas** (situações de crise, emergência, violência e desastre não são mais proibidas por norma). | O app **não** deve bloquear esses casos por regra rígida. A decisão é clínica e fica registrada via E6. Nenhuma validação automática de "caso inelegível".|
+
 ## Problema
 
 **O que esta acontecendo hoje que e ruim:**
@@ -56,7 +73,7 @@ A psicologa Talitha atende exclusivamente online e opera sem nenhum sistema inte
 - **Dores atuais:** Recebe link por WhatsApp e as vezes perde; nao sabe se esta em dia com pagamentos; nao tem acesso facil a recibos; experiencia de sessao varia conforme a ferramenta usada.
 - **Ganhos esperados:** Portal proprio com proximas sessoes, historico de pagamentos e recibos; acesso a sala com 2 cliques; lembretes automaticos com link direto; pagamento simples por PIX/boleto/cartao.
 
-### Persona 3 — Responsavel Legal (Pai/Mae de Paciente Menor)
+### ~~Persona 3 — Responsavel Legal~~ — **REMOVIDA pela Emenda E1.** O app nao atende menores de 18 anos. Todo o conteudo desta secao e historico e nao deve ser implementado.
 
 - **Perfil:** Pai ou mae de paciente menor de idade em acompanhamento. E quem autoriza o tratamento, paga as sessoes e precisa dos recibos no proprio CPF para deducao no IR.
 - **Job:** Quando meu filho esta em atendimento, quero acompanhar os agendamentos e pagamentos, e receber os recibos no meu CPF, para organizar a rotina familiar e declarar no Imposto de Renda.
@@ -295,7 +312,7 @@ Termos/LGPD         Cancelar c/ prazo                   Anotacoes lat.    Audit 
 | Tipo de paciente | Retencao minima | Contagem a partir de |
 |-----------------|-----------------|---------------------|
 | Adulto (>=18 anos no inicio) | 5 anos | Data de encerramento do atendimento |
-| Menor de idade (<18 anos no inicio) | 20 anos | Data de encerramento do atendimento |
+| ~~Menor de idade~~ | **N/A** | **REMOVIDO pela Emenda E1** — o app bloqueia cadastro de menores de 18 anos |
 
 - Prontuario nunca sofre DELETE fisico durante o periodo de retencao — apenas soft delete (`deleted_at`).
 - Apos o periodo de retencao, a eliminacao pode ocorrer (manual ou automatizada).
