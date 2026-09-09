@@ -1,6 +1,6 @@
 # Status: talitha-psicologia
-## Fase atual: Planejamento -- Correcoes do Architect aplicadas, proximo passo Data Architect
-## Ultimo agente: System Architect (correcoes pos-Security Review)
+## Fase atual: Planejamento -- Security Review da arquitetura APROVADA, proximo passo Data Architect
+## Ultimo agente: Security (re-verificacao rodada 2)
 ## Branch: feature/planning-docs
 
 ### Planejamento
@@ -8,28 +8,27 @@
 - PO / PRD + stories: OK (docs/talitha-prd.md + docs/talitha-user-stories.md)
 - Security Review (PRD): OK (docs/talitha-security-review-prd.md)
 - Design & UI: OK (docs/talitha-design-system.md + docs/talitha-wireframes.md + docs/talitha-navigation-flow.md)
-- System Architect: OK v1.1 (docs/talitha-architecture.md + docs/adr/ + CLAUDE.md) <- CORRECOES APLICADAS
-- Security Review (arquitetura): OK (docs/talitha-security-review-architecture.md)
+- System Architect: OK v1.1 (docs/talitha-architecture.md + docs/adr/ + CLAUDE.md)
+- Security Review (arquitetura): APROVADA (docs/talitha-security-review-architecture.md secao 6) -- 8/8 correcoes fechadas
 - Data Architect: -- pendente <- PROXIMO PASSO
 - Security Review (schema): -- pendente
 - Backlog: -- pendente
 
-### Correcoes aplicadas (v1.0 -> v1.1)
+### Resultado da re-verificacao (Security Review rodada 2)
 
-8 correcoes do Security Review da arquitetura:
+8 correcoes verificadas: **8 Fechadas / 0 Parciais / 0 Nao fechadas**
 
-| # | Correcao | Arquivos alterados |
-|---|----------|--------------------|
-| 1 | `create-charge` especificada (verify_jwt, role no banco, body so charge_id) | architecture.md (secoes 2, 8.1, 12.1), ADR-0006 |
-| 2 | Removido UPDATE direto em `sessions`; RPC SECURITY DEFINER; RLS nao e column-level | architecture.md (secoes 4.4, 6.1, 8.2, 16, 17), ADR-0002 |
-| 3 | Middleware nao e fronteira; wrappers obrigatorios; fail-closed; allowedOrigins | architecture.md (secoes 2, 5.1, 7.1, 7.2, 16), ADR-0006 |
-| 4 | Gate de MFA corrigido para aal2; recuperacao de senha coberta | architecture.md (secoes 7.1, 7.3, 16) |
-| 5 | Exemplo corrigido (UUID antes de cifrar); keys.ts com validacao; proibido `!` | architecture.md (secoes 2, 5.1, 9.1, 9.3) |
-| 6 | force-dynamic/no-store; Dockerfile (ARGs, --ignore-scripts, sem segredos) | architecture.md (secoes 3, 7.4, 14.1, 14.3, 16) |
-| 7 | Rascunho como conteudo clinico cifrado (session_note_drafts); proibido localStorage | architecture.md (secoes 9.2, 16, 17) |
-| 8 | ADR-0001 risco residual; checklist 14.3 completo | ADR-0001, architecture.md (secao 14.3) |
+- AC1 (Critico): create-charge com 9 pre-condicoes, IDOR fechado por ownership check
+- AC2 (Critico): REVOKE UPDATE ON sessions, RPCs de assinatura estreita, auto-admissao fechada
+- AA1/AA2: wrappers obrigatorios, middleware nao e fronteira, fail-closed
+- AA3: aal2 (nao enrollment), recuperacao de senha coberta
+- AA4: keys.ts com validacao no boot, AAD com UUID real
+- AA5/AA6/AA7: force-dynamic, Dockerfile sem segredos, npm ci --ignore-scripts
+- AA11: session_note_drafts como conteudo clinico cifrado
+- AA12: ADR-0001 com risco residual, checklist completo (20 itens)
 
-Alem das 8: secao 17 reescrita (32 requisitos), nova secao 18 (12 requisitos Stack Agent), CLAUDE.md atualizado (6 regras novas), ADR-0006 atualizado.
+Secao 17 (32 requisitos) cobre 100% da secao 4 do Security Review.
+Nenhuma regressao. Nenhum issue novo.
 
 ### Blockers
 - GitHub CLI nao instalado

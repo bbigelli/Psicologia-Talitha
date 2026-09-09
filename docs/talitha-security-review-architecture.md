@@ -383,8 +383,133 @@ As ressalvas da seção 3.2 seguem para o Backlog como requisitos de implementa�
 
 ---
 
+## 6. Re-verificacao (rodada 2)
+
+**Data:** 2026-09-09
+**Entrada:** `docs/talitha-architecture.md` v1.1, `docs/adr/ADR-0001-*.md`, `ADR-0002-*.md`, `ADR-0006-*.md`, `CLAUDE.md` (6 regras novas)
+**Criterio:** o mesmo da rodada 1 -- mencionar o requisito nao e fecha-lo; fechado e quando existe mecanismo que **impede** a implementacao insegura.
+
+### 6.1 Tabela das 8 correcoes
+
+| # | Correcao | Veredicto | Evidencia |
+|---|----------|-----------|-----------|
+| 1 | **AC1 -- `create-charge` especificada** | **Fechada** | Secao 8.1 (9 pre-condicoes): `verify_jwt=true`; pre-cond. 2 exige `role = psychologist` verificado no banco; pre-cond. 3 aceita **apenas** `charge_id` (zod); pre-cond. 4 carrega o registro e **verifica `charges.psychologist_id == uid`** (fecha o IDOR); pre-cond. 5 deriva paciente/valor do banco. Estrutura secao 2 inclui `create-charge/` e `retry-charges/`. Tabela secao 12.1 lista `ASAAS_API_KEY`, `ASAAS_BASE_URL`, `ASAAS_WEBHOOK_TOKEN`. ADR-0006 documenta o fluxo `charge_id`-only e registra a alternativa descartada com cenario de falha. |
+| 2 | **AC2 -- RLS nao e column-level / RPCs** | **Fechada** | Secao 4.4 nova: declara a invariante. Secao 6.1 especifica 3 RPCs (`enter_waiting_room`, `admit_patient`, `cancel_session`). Secao 8.2 e secao 17.6 confirmam: `enter_waiting_room` escreve **so** `waiting_since` e valida ownership por `auth.uid()`; `admit_patient` escreve **so** `admitted_at` e exige `role = psychologist` no banco. `REVOKE UPDATE ON sessions FROM authenticated, anon` declarado na secao 17.6. ADR-0002 reescrito com a alternativa descartada "UPDATE direto (v1.0)" e referencia a AC2. Nenhum UPDATE/INSERT direto do client permanece em `charges` (Server Action + Edge Function), `clinical_records` (secao 17.28 nenhuma policy de patient), `consents` (append-only), `profiles` (UPDATE de `role` proibido por RLS, secao 17.13). |
+| 3 | **AA1/AA2 -- wrappers e middleware nao e fronteira** | **Fechada** | Secao 7.1 abre com "O middleware e UX + defense-in-depth. NAO e a fronteira de autorizacao." Fail-closed: "try { getUser() } catch { Redirect /login } -- fail-closed em QUALQUER erro" (secao 7.1 passo 2). Secao 7.2 tabela de 5 camadas de defesa. Secao 5.1 mostra `withPsychologist` com `getUser()` + role no banco + `aal2`. `_guard.ts` na estrutura secao 2. Secao 16.20-21 codifica como regras. Secao 14.2 `allowedOrigins`. ADR-0006 declara Server Actions como endpoints HTTP publicos e o wrapper como obrigatorio. CLAUDE.md regra correspondente presente. |
+| 4 | **AA3 -- aal2 e recuperacao de senha** | **Fechada** | Secao 7.1.6a: "aal < aal2? Redirect /mfa/verify (verifica NIVEL DE GARANTIA, nao enrollment)". Secao 7.3: sessao `aal1` nao passa, mesmo com TOTP cadastrado; recuperacao de senha exige MFA challenge antes de efetivar e revoga outras sessoes. Secao 5.1 wrapper: `getAuthenticatorAssuranceLevel()` com check `aal2`. Secao 7.2 camada 5: `(auth.jwt()->>'aal') = 'aal2'` em policies clinicas. Secao 17.13 e secao 17.28 incluem clausula `aal2`. Secao 16.22 codifica como regra. CLAUDE.md regra correspondente presente. |
+| 5 | **AA4 -- validacao de chaves no boot e AAD** | **Fechada** | Secao 9.1 `loadKey()`: verifica presenca, base64, exatamente 32 bytes, `delete process.env[envName]` apos carregar; lancamento na inicializacao. Comentarios explicitamente proibem `!`. Secao 5.1 corrigido: `const patientId = crypto.randomUUID()` **antes** de `encryptField(parsed.cpf, patientId, 'cpf')` -- AAD usa UUID real. Secao 9.3 blind-index importa de `keys.ts`, nao de `process.env`. Secao 13 inclui teste `keys.test.ts`. |
+| 6 | **AA5/AA6/AA7 -- cache, Dockerfile, supply chain** | **Fechada** | Cache: secao 3 acrescenta `force-dynamic` + `fetchCache='force-no-store'` nas rotas de paciente; secao 7.4 `Cache-Control: private, no-store` para rotas que decifram; secao 16.17 regra. Dockerfile secao 14.1: `npm ci --ignore-scripts` (l.626); somente `NEXT_PUBLIC_*` como ARG (l.636-643); nenhum segredo; stage 3 so runtime. Secao 14.3 checklist: `docker history` sem segredo, `npm audit --audit-level=high`. Secao 12.2.6 regra explicita. Secao 16.19 regra. CLAUDE.md regras correspondentes presentes. |
+| 7 | **AA11 -- rascunho como conteudo clinico cifrado** | **Fechada** | Secao 9.2 inclui `session_note_drafts` com AAD `patient_id\|session_id`. Descricao: auto-save por Server Action `runtime='nodejs'`, RLS so psicologa, DELETE com evolucao definitiva, job de limpeza 7 dias. Secao 17.1 inclui colunas de envelope. Secao 17.23 especificacao completa. Secao 16.16 proibe `localStorage`/`sessionStorage`/IndexedDB para campo clinico. CLAUDE.md regra correspondente presente. |
+| 8 | **AA12/A1/M12 -- risco residual e checklist** | **Fechada** | ADR-0001 secao "Risco residual" (l.48-57): declara que a separacao nao protege contra comprometimento do host/EasyPanel; lista cenarios e controles operacionais. Checklist secao 14.3 (l.680-699): 20 itens, incluindo custodia KEK com teste de restauracao (l.695), plano de incidente (l.696), 2FA EasyPanel (l.697), Redirect URLs (l.692), `npm audit` (l.693), `docker history` (l.684), verificacao das 3 chaves (l.686), versao do Next.js (l.699). |
+
+**Placar: 8 Fechadas / 0 Parciais / 0 Nao fechadas.**
+
+### 6.2 Cobertura da secao 17 (32 requisitos) contra a secao 4
+
+#### 6.2.1 Correcoes da secao 4.1 na secao 17
+
+| Correcao 4.1 | Item secao 17 | Status |
+|---|---|---|
+| Secao 17.5 -- trigger de remarcacao em `room_name` | Secao 17.5 (l.761): trigger que regenera `room_name` e zera `waiting_since`/`admitted_at` quando `scheduled_at` muda | Coberto |
+| Secao 17.6 -- REVOKE UPDATE, RPCs | Secao 17.6 (l.762): `REVOKE UPDATE ON sessions FROM authenticated, anon`; ambas RPCs especificadas com assinatura estreita | Coberto |
+| Secao 17.7 -- sem payload bruto | Secao 17.7 (l.763): "Sem payload bruto -- colunas de allowlist apenas; CPF e nome completo proibidos" | Coberto |
+| Secao 17.11 -- sem guardian, preferencias, timestamptz | Secao 17.11 (l.767): "Sem subject_type = guardian"; preferencia de comunicacao; timestamptz UTC | Coberto |
+| Secao 17.13 -- profiles.role canonico | Secao 17.13 (l.769): "fonte canonica"; trigger espelha para `app_metadata`; RLS proibe UPDATE de `role`; clausula `aal2` | Coberto |
+| Secao 17.14 -- retencao fixa 5 anos + CHECK idade | Secao 17.14 (l.770): retencao fixa; secao 17.18 (l.777): CHECK >= 18 | Coberto |
+| Global -- timestamptz UTC | Secao 17.14 (l.770): "Todos os campos com valor probatorio em timestamptz UTC" | Coberto |
+
+**7/7 cobertos.**
+
+#### 6.2.2 Requisitos adicionais da secao 4.2 na secao 17
+
+| Req. 4.2 | Item secao 17 | Status |
+|---|---|---|
+| 18. CHECK idade no banco | Secao 17.18 (l.777) | Coberto -- texto identico |
+| 19. Tabela `email_action_tokens` | Secao 17.19 (l.778) | Coberto -- colunas, hash, `used_at` transacional, TTL, RLS so RPC |
+| 20. Eliminacao seletiva por categoria | Secao 17.20 (l.779) | Coberto -- categorias eliminaveis vs. congelaveis |
+| 21. `data_subject_requests` | Secao 17.21 (l.780) | Coberto -- colunas, `decision`, `legal_basis`, resposta fundamentada |
+| 22. Preferencia de comunicacao | Secao 17.22 (l.781) | Coberto |
+| 23. `session_note_drafts` | Secao 17.23 (l.782) | Coberto -- envelope, AAD, RLS, DELETE, job |
+| 24. `log_audit_system` | Secao 17.24 (l.783) + secao 17.4 (l.760) | Coberto -- REVOKE EXECUTE, enum `actor_source` |
+| 25. Serializacao hash chain | Secao 17.25 (l.784) | Coberto -- `pg_advisory_xact_lock` |
+| 26. Caminho assincrono audit log | Secao 17.26 (l.785) | Coberto -- outbox ou sincrono |
+| 27. REVOKE SELECT colunas cifradas | Secao 17.27 (l.786) | Coberto -- todas as tabelas listadas |
+| 28. RLS `clinical_records`/`anamnesis` -- proibicao | Secao 17.28 (l.787) | Coberto -- nenhum SELECT ao patient; `anamnesis` sem ciphertext; `aal2` |
+| 29. `aal2` nas policies clinicas | Secao 17.13 (l.769) + secao 17.28 (l.787) | Coberto -- clausula declarada em ambos |
+| 30. `profiles` (tabela) | Secao 17.13 (l.769) | Coberto -- colunas, trigger, RLS |
+| 31. `CRON_SECRET` no Vault | Secao 17.30 (l.789) | Coberto -- `vault.decrypted_secrets`, `timingSafeEqual` |
+| 32. Idempotencia lembretes/regua | Secao 17.29 (l.788) | Coberto -- constraints UNIQUE como constraints de banco |
+
+**15/15 cobertos.**
+
+#### 6.2.3 Verificacoes da secao 4.3 na secao 17
+
+| Verificacao 4.3 | Secao 17 | Status |
+|---|---|---|
+| `rowsecurity=false` -> 0 linhas | Secao 17.32 (l.791) | Coberto |
+| `relforcerowsecurity=false` para `audit_log` -> 0 | Secao 17.32 (l.791) | Coberto |
+| UPDATE/DELETE/TRUNCATE em `audit_log` -> excecao | Secao 17.32 (l.791) | Coberto |
+| UPDATE `sessions` como paciente -> erro | Secao 17.32 (l.791) | Coberto |
+| SELECT ciphertext como `authenticated` -> erro | Secao 17.32 (l.791) | Coberto |
+| Verificacao do hash chain -> funcao dedicada | Secao 17.32 (l.791) | Coberto |
+
+**6/6 cobertos.**
+
+**Conclusao da cobertura:** a secao 17 com 32 requisitos cobre 100% da secao 4 deste review (7 correcoes + 15 adicionais + 6 verificacoes). Nenhum requisito de seguranca ficou fora do handoff. Adicionalmente, a secao 17 inclui 2 itens extras nao pedidos pela secao 4: secao 17.31 (tabela `charges` com `pending_creation` e `psychologist_id`, para AC1) e secao 17.32 (verificacoes executaveis).
+
+### 6.3 Regras novas do CLAUDE.md
+
+6 regras adicionadas. Avaliacao de clareza e sobrevivencia a sessao futura sem este contexto:
+
+| Regra | Conteudo | Avaliacao |
+|---|---|---|
+| RLS nao e column-level | Transicoes por RPC SECURITY DEFINER, nunca UPDATE direto | Clara, acionavel, auto-contida |
+| Toda Server Action usa wrapper | withPsychologist/withPatient/withPublicAction; middleware NAO e fronteira | Clara, acionavel; cita os nomes dos wrappers |
+| MFA e aal2, nao enrollment | Sessao so-senha nao passa; recuperacao exige MFA | Clara, distingue os dois conceitos, acionavel |
+| Nenhum segredo como ARG/ENV no Dockerfile | Segredos so como env de runtime (EasyPanel) | Clara, acionavel |
+| Proibido localStorage para campo clinico | Inclui rascunho de anotacoes | Clara, cita o caso especifico mais provavel |
+| Plaintext clinico nunca em cache do Next.js | `force-dynamic` + `no-store` em toda rota que decifra | Clara, acionavel, prescreve o mecanismo |
+
+**Avaliacao: as 6 regras sao especificas, acionaveis e auto-contidas. Uma sessao futura sem o contexto deste review as respeita.**
+
+### 6.4 Regressoes
+
+A v1.1 usa extensivamente a notacao "(Identico a v1.0)" para secoes nao alteradas. Isso significa que o documento e um diff sobre a v1.0, nao um documento autonomo. Nao e uma regressao de seguranca -- o conteudo nao foi perdido -- mas e uma fragilidade documental: se a v1.0 for removida do historico, secoes como 4.1-4.3, 9.4-9.6, 11.1-11.3 e 13.1-13.2 ficam sem corpo.
+
+**Regressoes de seguranca: nenhuma identificada.** Nenhum mecanismo da v1.0 foi removido ou enfraquecido. A reescrita foi estritamente aditiva. As correcoes nao alteraram decisoes de arquitetura existentes (envelope encryption, audit log, LiveKit fora do Supabase, webhook com re-consulta) -- apenas acrescentaram os mecanismos de enforcement que faltavam.
+
+Itens que estavam ausentes na v1.0 e continuam ausentes na v1.1 (nao sao regressoes -- ja catalogados como AM/AB e agora cobertos na secao 18 como requisitos de implementacao ao Stack Agent):
+- Rate limiting (M1): secao 18.7
+- Mensagens genericas de login (B7): secao 11.5
+- Politica de senha (M5): secao 18.8
+- Alteracao de email (M9): secao 18.9
+
+### 6.5 Issues novos
+
+Nenhum issue novo de severidade Critica ou Alta identificado nesta rodada.
+
+**Observacao informacional:** o documento v1.1 e um diff, nao documento completo. Recomenda-se que, ao longo do desenvolvimento, secoes marcadas "(Identico a v1.0)" sejam inline-adas no documento principal para que a v1.1 seja auto-contida. Nao e bloqueante.
+
+### 6.6 Veredicto final
+
+## APROVADA
+
+As 8 correcoes exigidas na rodada 1 foram todas fechadas com mecanismos concretos, nao com prosa:
+
+- **AC1 (Critico):** `create-charge` agora tem 9 pre-condicoes, verifica ownership (`psychologist_id == uid`), aceita apenas `charge_id`, e esta na estrutura de pastas, na tabela de segredos e no ADR-0006. O IDOR esta fechado.
+- **AC2 (Critico):** `REVOKE UPDATE ON sessions`, RPCs de assinatura estreita com ownership e role check, invariante documentada na secao 4.4. O auto-admissao/tampering esta fechado.
+- **AA1-AA12 (Altos):** todos com mecanismo implementavel, codificados em regras da secao 16, requisitos da secao 17 e secao 18, e regras do CLAUDE.md.
+
+A secao 17 (32 requisitos) cobre 100% dos requisitos da secao 4 deste review. O Data Architect recebe um handoff completo e verificavel, sem lacunas entre a prosa do documento e o que o handoff exige.
+
+**O Data Architect esta liberado para comecar.**
+
+
+---
+
 ## Histórico de versões
 
 | Versão | Data | Mudança |
 |---|---|---|
 | 1.0 | 2026-09-09 | Security Review da arquitetura: matriz de absorção dos 42 issues do review do PRD (26 absorvidos / 11 parciais / 5 não absorvidos), 36 issues novos (2🔴 / 12🟠 / 15🟡 / 7🟢), veredicto de reprovação com 8 correções pontuais ao Architect, 12 ressalvas ao Stack Agent, 5 pendências humanas novas, 15 requisitos adicionais + 7 correções ao handoff do Data Architect |
+| 1.1 | 2026-09-09 | Re-verificacao (rodada 2): 8/8 correcoes fechadas, secao 17 cobre 100% da secao 4, nenhuma regressao, nenhum issue novo. Veredicto: APROVADA. Data Architect liberado |
