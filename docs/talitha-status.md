@@ -1,6 +1,6 @@
 # Status: talitha-psicologia
-## Fase atual: Execucao -- Sprint 4 implementada, aguardando Code Review
-## Ultimo agente: Next.js Agent (Sprint 4)
+## Fase atual: Execucao -- Sprint 4 QA APROVADO, pronta para Sprint 5
+## Ultimo agente: QA Agent (Sprint 4)
 ## Branch: feature/sprint-4-schedule
 
 ### Planejamento
@@ -91,7 +91,7 @@
 - S3 (CR Sprint 3): documentar consumo de convite na allowlist do Architect
 - Nota Sprint 4: verificar hash do texto de comunicacao ao enviar lembretes
 
-### Sprint 4: Agenda & Lembretes -- IMPLEMENTADA (aguardando CR + QA)
+### Sprint 4: Agenda & Lembretes -- APROVADA
 - **W3 fix**: CONCLUIDO -- src/lib/consent-version.ts criado, 3 consumidores atualizados, 5 testes de sincronizacao
 - Task 4.1: Visualizacao da agenda (semanal/diaria) -- CONCLUIDA
 - Task 4.2: Criacao de sessao com recorrencia semanal -- CONCLUIDA
@@ -142,5 +142,15 @@
 - S3 (CR Sprint 3): documentar consumo de convite na allowlist do Architect
 - Deploy da Edge Function send-reminders PENDENTE
 
+- QA: APROVADO -- docs/talitha-qa-sprint-4.md
+- Build: PASSA
+- TypeScript: PASSA
+- Testes: 408 passando, 1 pulado (409 total) -- SEM REGRESSAO (375 anteriores intactos + 33 novos)
+- Ciclo completo de lembrete: FUNCIONA (sessao -> edge function -> reminder + tokens -> idempotencia)
+- Trigger reschedule: room_name regenerado, waiting/admitted limpos
+- Tokens confirmar/cancelar: DISTINTOS e purpose-bound
+- Consentimento revogado: BLOQUEIA envio
+- Email sem dado de saude: CONFIRMADO
+
 ### Proximo passo
-Ativar Code Review para Sprint 4. Apos CR + QA aprovados, avancar para Sprint 5 -- Financeiro & Asaas.
+Avancar para Sprint 5 -- Financeiro & Asaas.
