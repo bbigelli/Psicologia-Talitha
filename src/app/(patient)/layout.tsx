@@ -37,8 +37,40 @@ export default async function PatientLayout({
     redirect("/login")
   }
 
-  // Consent check will be added in Sprint 3
-  // For now, allow access to portal
+  // Defense-in-depth: verify consent status
+  const { data: patient } = await supabase
+    .from("patients")
+    .select("id")
+    .eq("user_id", user.id)
+    .single()
+
+  if (patient) {
+    const requiredPurposes = ["online_therapy", "lgpd_clinical", "lgpd_asaas"]
+
+    const { data: consents } = await supabase
+      .from("consents")
+      .select("purpose, action, occurred_at")
+      .eq("patient_id", patient.id)
+      .in("purpose", requiredPurposes)
+      .order("occurred_at", { ascending: false })
+
+    const latestByPurpose = new Map<string, string>()
+    if (consents) {
+      for (const c of consents) {
+        if (!latestByPurpose.has(c.purpose)) {
+          latestByPurpose.set(c.purpose, c.action)
+        }
+      }
+    }
+
+    const allAccepted = requiredPurposes.every(
+      (p) => latestByPurpose.get(p) === "accept",
+    )
+
+    if (!allAccepted) {
+      redirect("/termos/atendimento")
+    }
+  }
 
   return (
     <>

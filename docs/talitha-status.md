@@ -1,7 +1,7 @@
 # Status: talitha-psicologia
-## Fase atual: Execucao -- Sprint 2 QA APROVADO COM RESSALVA (F6 pendente)
-## Ultimo agente: QA (Sprint 2 -- rodada 2)
-## Branch: feature/sprint-2-auth
+## Fase atual: Execucao -- Sprint 3 IMPLEMENTADA (aguardando Code Review + QA)
+## Ultimo agente: Next.js Agent (Sprint 3)
+## Branch: feature/sprint-3-patients
 
 ### Planejamento
 - Decisoes de stack e escopo: OK (docs/decisions.md)
@@ -55,6 +55,75 @@
 - S11: eslint error em MfaSetup.tsx (setState em useEffect)
 - (Sprint 1) S1: ASAAS_BASE_URL ausente no .env.example
 
+### Sprint 3: Pacientes & Consentimento -- IMPLEMENTADA
+- Task 3.1: Cadastro de paciente com CPF cifrado -- CONCLUIDA
+  - Schema: src/schemas/patient.ts (zod, CPF mod-11, idade >= 18)
+  - Actions: src/lib/actions/patients.ts (createPatient, resendInvite via withPsychologist)
+  - Pages: src/app/(psychologist)/pacientes/page.tsx, pacientes/novo/page.tsx
+  - Components: PatientForm.tsx, PatientList.tsx
+  - CPF cifrado com envelope (AAD=patient_id|'cpf'), blind index HMAC-SHA256
+  - UUID gerado ANTES de cifrar (AAD depende do ID)
+  - Admin client usado (patients sem GRANT INSERT para authenticated)
+- Task 3.2: Email de convite via Resend -- CONCLUIDA
+  - Email client: src/lib/email/client.ts (RESEND_API_KEY_APP)
+  - Templates: src/lib/email/templates.ts (assunto neutro "Seu acesso ao portal")
+  - Send: src/lib/email/send.ts (nunca loga conteudo)
+  - Token hash (SHA-256) no banco, raw no email, TTL 72h, purpose=invite
+  - Rate limit: 3/paciente/hora
+- Task 3.3: Primeiro acesso do paciente -- CONCLUIDA
+  - Page: src/app/(auth)/convite/[token]/page.tsx (force-dynamic, no-store)
+  - Component: src/components/auth/InviteAcceptForm.tsx
+  - Token validado via consume_email_token RPC (admin client, atomico)
+  - Senha minima 10 chars com letra e numero
+  - Apos criar senha: redirect para /termos/atendimento
+- Task 3.4: Termos de consentimento (CFP + LGPD) -- CONCLUIDA
+  - Pages: termos/atendimento (etapa 1/2), termos/lgpd (etapa 2/2)
+  - Components: ConsentSection, OnlineTherapyConsentForm, LgpdConsentForm
+  - Actions: src/lib/actions/consents.ts (acceptConsent, acceptMultipleConsents, revokeConsent)
+  - Textos: src/lib/consent-texts.ts (constantes + hashes precomputados)
+  - Consentimento segmentado: online_therapy, lgpd_clinical, lgpd_asaas (obrigatorios) + communication (opcional)
+  - E7: clausulas de formato online, faltas, queda de conexao
+  - Aceite com hash SHA-256 do texto, IP, user_agent, timestamp UTC
+  - Append-only (enforced por triggers no banco)
+- Task 3.5: Portal do paciente (home) -- CONCLUIDA
+  - Page: src/app/(patient)/portal/page.tsx (reescrita completa)
+  - Linguagem discreta: "compromissos" em vez de "sessoes de terapia"
+  - Estado vazio com mensagem orientativa
+  - Skeleton loading via Suspense
+- Task 3.6: Perfil do paciente -- CONCLUIDA
+  - Page: src/app/(patient)/portal/perfil/page.tsx
+  - Component: src/components/patients/PatientProfile.tsx
+  - Dados da psicologa (CRP, especialidade), sem e-Psi (E5)
+  - Revogacao de consentimento LGPD com AlertDialog
+  - Sem campo e-Psi (E5)
+- Middleware: atualizado com consent check para pacientes
+- Patient layout: atualizado com consent check (defense-in-depth)
+- Build: PASSA (19 rotas)
+- TypeScript: PASSA (zero erros)
+- Testes: 217 total (216 passando, 1 pulado) -- SEM REGRESSAO
+- Resend SDK instalado (v4)
+
+### Decisoes tomadas pelo agente (sem perguntar ao dev)
+- Usado admin client (service_role) para INSERT em patients e email_action_tokens (alternativa: RPC nova). Motivo: patients nao tem GRANT INSERT para authenticated; admin.ts ja esta no allowlist do projeto; a autorizacao e feita dentro do wrapper withPsychologist
+- Hashes dos textos de consentimento precomputados como constantes (alternativa: computar dinamicamente). Motivo: evita node:crypto no bundle do client; valores deterministicos que so mudam quando o texto muda
+- acceptInvite nao usa wrapper (withPublicAction). Motivo: paciente nao esta autenticado; precisa de admin client para consumir token e setar senha; autorizacao e pelo token criptografico
+- Colunas BYTEA de CPF inseridas com prefixo \\x (formato PostgREST para hex)
+
+### Schema: nenhuma RPC nova necessaria
+- createPatient usa admin client direto (inserindo em patients e email_action_tokens)
+- consume_email_token ja existe e foi reutilizada
+- Consents inseridos pelo paciente via RLS policy existente (consents_insert_patient)
+
+### Pendencias (nao bloqueiam Sprint 3)
+- **F6 (WARNING):** Politica de senha no Supabase Auth dashboard NAO configurada
+- S1: middleware.ts deprecation -- avaliar migracao para proxy.ts na Sprint 8
+- S4: ProfileForm exige CPF em toda edicao
+- S6: Sidebar mobile sem Vaul
+- S7: x-forwarded-for trust rule ausente -- Sprint 4+
+- S10: Considerar wrapper withAuthenticatedUser para Server Actions role-agnostic
+- S11: eslint error em MfaSetup.tsx
+- EMAIL_FROM nao adicionado ao .env.example (permissao negada para ler/editar .env.example)
+- RESEND_API_KEY_APP nao adicionado ao .env.example (mesmo motivo)
+
 ### Proximo passo
-Sprint 2 aprovada. Pode avancar para Sprint 3 -- Pacientes & Consentimento.
-F6 (password policy no dashboard) deve ser configurado antes do deploy, nao bloqueia Sprint 3.
+Sprint 3 implementada. Proximo: Code Review, depois QA.
