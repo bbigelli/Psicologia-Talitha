@@ -4,7 +4,8 @@
  * WeekView — weekly schedule grid for the psychologist.
  *
  * Shows 7 days (Mon-Sun) with session blocks distributed by time.
- * Desktop only — mobile switches to DayView.
+ * Visibility is controlled by the parent (ScheduleClient), not by
+ * this component (W2 fix).
  *
  * @see wireframe A.06
  */
@@ -47,7 +48,7 @@ export function WeekView({
   const today = formatDateBR(new Date())
 
   return (
-    <div className="hidden md:block overflow-x-auto">
+    <div className="overflow-x-auto">
       <div className="min-w-[700px]">
         {/* Header row with day names */}
         <div className="grid grid-cols-[60px_repeat(7,1fr)] border-b">
@@ -94,8 +95,7 @@ export function WeekView({
                 const daySessions = (
                   sessionsByDate.get(dateStr) ?? []
                 ).filter((s) => {
-                  const h = new Date(s.scheduledAt).getHours()
-                  // Rough: the Brazil TZ offset. We parse the formatted time.
+                  // Use explicit Brazil timezone to determine the hour slot
                   const formatted = new Intl.DateTimeFormat("en-US", {
                     timeZone: "America/Sao_Paulo",
                     hour: "numeric",

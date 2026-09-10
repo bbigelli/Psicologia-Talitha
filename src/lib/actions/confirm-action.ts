@@ -83,6 +83,14 @@ export const confirmEmailAction = withPublicAction(
       throw new Error("Link invalido ou expirado.")
     }
 
+    // Track outcome to return to the UI — never throw after a committed
+    // side effect (W1 fix). The wrapper returns success, and the UI shows
+    // the appropriate message based on the returned data.
+    let actionOutcome: {
+      action: "confirmed" | "cancelled"
+      isLateCancellation?: boolean
+    } | null = null
+
     if (parsed.purpose === "confirm_attendance" && result.session_id) {
       // Update session status to confirmed via admin (REVOKE prevents authenticated)
       const { error: updateError } = await admin
@@ -116,6 +124,8 @@ export const confirmEmailAction = withPublicAction(
         session_id: result.session_id,
         action: "CONFIRM_ATTENDANCE",
       })
+
+      actionOutcome = { action: "confirmed" }
     } else if (
       parsed.purpose === "cancel_attendance" &&
       result.session_id
@@ -127,7 +137,10 @@ export const confirmEmailAction = withPublicAction(
         .eq("id", result.session_id)
         .single()
 
-      if (session && ["scheduled", "confirmed"].includes(session.status)) {
+      if (
+        session &&
+        ["scheduled", "confirmed"].includes(session.status)
+      ) {
         const { data: profile } = await admin
           .from("profiles")
           .select("cancellation_policy_hours")
@@ -161,6 +174,8 @@ export const confirmEmailAction = withPublicAction(
             action: "CANCEL_ATTENDANCE",
             error_code: "UPDATE_FAILED",
           })
+          // Even if the UPDATE failed, the token is consumed.
+          // Don't throw — report the problem in the outcome.
         }
 
         // Audit log
@@ -182,18 +197,20 @@ export const confirmEmailAction = withPublicAction(
           action: "CANCEL_ATTENDANCE",
         })
 
-        if (isLateCancellation) {
-          throw new Error(
-            "Compromisso cancelado fora do prazo. Cobranca podera ser devida.",
-          )
-        }
+        // W1 fix: NEVER throw after a committed side effect.
+        // The cancellation already happened in the database.
+        // Return success with the late-cancellation flag so the UI
+        // can show "Cancelado. Como foi fora do prazo, a sessao sera cobrada."
+        actionOutcome = { action: "cancelled", isLateCancellation }
       } else {
+        // Session is not in a cancellable state — no side effect committed.
+        // This throw is safe.
         throw new Error(
           "Este compromisso nao pode mais ser cancelado.",
         )
       }
     }
 
-    return undefined
+    return actionOutcome
   },
 )

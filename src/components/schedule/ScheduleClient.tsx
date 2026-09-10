@@ -18,7 +18,7 @@ import { useState, useCallback } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { ChevronLeft, ChevronRight, Plus } from "lucide-react"
-import { useSchedule, formatDateBR } from "@/hooks/useSchedule"
+import { useSchedule } from "@/hooks/useSchedule"
 import { WeekView } from "@/components/schedule/WeekView"
 import { DayView } from "@/components/schedule/DayView"
 import {
@@ -113,11 +113,11 @@ export function ScheduleClient({ sessions }: ScheduleClientProps) {
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8"
+              className="h-10 w-10"
               onClick={() => handleNav("prev")}
               aria-label="Anterior"
             >
-              <ChevronLeft className="h-4 w-4" />
+              <ChevronLeft className="h-5 w-5" />
             </Button>
             <span className="min-w-[160px] text-center text-sm font-medium capitalize">
               {weekLabel}
@@ -125,11 +125,11 @@ export function ScheduleClient({ sessions }: ScheduleClientProps) {
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8"
+              className="h-10 w-10"
               onClick={() => handleNav("next")}
               aria-label="Proximo"
             >
-              <ChevronRight className="h-4 w-4" />
+              <ChevronRight className="h-5 w-5" />
             </Button>
           </div>
         </div>
@@ -189,15 +189,18 @@ export function ScheduleClient({ sessions }: ScheduleClientProps) {
         </div>
       )}
 
-      {/* Views */}
+      {/* Views — visibility controlled here, never inside the child component (W2 fix) */}
       {sessions.length > 0 && (
         <>
+          {/* Desktop: show WeekView or DayView based on toggle */}
           {viewMode === "week" ? (
-            <WeekView
-              weekDates={weekDates}
-              sessions={sessions}
-              onSessionClick={handleSessionClick}
-            />
+            <div className="hidden md:block">
+              <WeekView
+                weekDates={weekDates}
+                sessions={sessions}
+                onSessionClick={handleSessionClick}
+              />
+            </div>
           ) : (
             <div className="hidden md:block">
               <DayView
@@ -208,12 +211,14 @@ export function ScheduleClient({ sessions }: ScheduleClientProps) {
             </div>
           )}
 
-          {/* Mobile always shows DayView */}
-          <DayView
-            currentDate={currentDate}
-            sessions={sessions}
-            onSessionClick={handleSessionClick}
-          />
+          {/* Mobile: always DayView regardless of toggle */}
+          <div className="md:hidden">
+            <DayView
+              currentDate={currentDate}
+              sessions={sessions}
+              onSessionClick={handleSessionClick}
+            />
+          </div>
         </>
       )}
 

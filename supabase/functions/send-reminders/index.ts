@@ -9,10 +9,14 @@
  * - Uses RESEND_API_KEY_CRON (not the app key)
  * - Uses SUPABASE_SERVICE_ROLE_KEY for DB access
  *
- * Idempotency:
+ * Idempotency and retry:
  * - INSERT into session_reminders with UNIQUE (session_id, reminder_type)
- * - Duplicate insert → constraint violation → treated as "already sent"
- * - No pre-check needed (bank-level constraint handles race)
+ * - Duplicate insert with delivery_status='sent' → skip (already delivered)
+ * - Duplicate insert with delivery_status='failed' → retry (UPDATE + resend)
+ * - Retry bounded by session time window: once the session passes, the query
+ *   window excludes it and retries stop naturally. Additional guard: max 2h
+ *   since first attempt (created_at) to avoid retrying permanently broken
+ *   deliveries (e.g., invalid email address)
  *
  * Consent:
  * - Checks communication_preferences for opt-out before sending
@@ -59,14 +63,6 @@ interface PatientInfo {
   full_name: string
   user_id: string
   email: string
-}
-
-interface ReminderDecision {
-  session: SessionToRemind
-  patient: PatientInfo
-  reminderType: "24h" | "1h"
-  confirmToken: string
-  cancelToken: string
 }
 
 // --- Security ---
@@ -436,8 +432,14 @@ Deno.serve(async (req: Request) => {
     const patient = patientMap.get(reminder.session.patient_id)
     if (!patient) continue
 
-    // Try to INSERT the reminder record — UNIQUE constraint ensures idempotency.
-    // If it fails with duplicate, skip (already sent).
+    // Idempotency + retry (W3 fix):
+    // 1. Try INSERT. If it succeeds, this is a new reminder — proceed to send.
+    // 2. If UNIQUE violation, check the existing record:
+    //    - delivery_status='sent' → already delivered, skip.
+    //    - delivery_status='failed' AND created_at < 2h ago → retry (resend).
+    //    - delivery_status='failed' AND created_at >= 2h ago → give up (permanent failure).
+    //    - delivery_status='pending' → another invocation is handling it, skip.
+    let isRetry = false
     const { error: insertError } = await supabase
       .from("session_reminders")
       .insert({
@@ -447,23 +449,60 @@ Deno.serve(async (req: Request) => {
       })
 
     if (insertError) {
-      // Unique constraint violation = already sent
-      if (
+      const isDuplicate =
         insertError.code === "23505" ||
         insertError.message?.includes("unique") ||
         insertError.message?.includes("duplicate")
-      ) {
-        continue // Already sent — idempotent
+
+      if (!isDuplicate) {
+        failedCount++
+        continue
       }
-      failedCount++
-      continue
+
+      // Duplicate — check existing record for retry eligibility
+      const { data: existing } = await supabase
+        .from("session_reminders")
+        .select("delivery_status, created_at")
+        .eq("session_id", reminder.session.id)
+        .eq("reminder_type", reminder.reminderType)
+        .single()
+
+      if (!existing || existing.delivery_status === "sent") {
+        continue // Already delivered successfully
+      }
+
+      if (existing.delivery_status === "pending") {
+        continue // Another invocation is handling it right now
+      }
+
+      // delivery_status='failed' — check retry window
+      const createdAt = new Date(existing.created_at)
+      const ageMs = now.getTime() - createdAt.getTime()
+      const maxRetryMs = 2 * 60 * 60 * 1000 // 2 hours
+
+      if (ageMs > maxRetryMs) {
+        continue // Too old — probably permanent failure (invalid email, etc.)
+      }
+
+      // Eligible for retry: reset to pending
+      await supabase
+        .from("session_reminders")
+        .update({ delivery_status: "pending" })
+        .eq("session_id", reminder.session.id)
+        .eq("reminder_type", reminder.reminderType)
+
+      isRetry = true
     }
 
-    // Generate confirmation tokens (only for 24h reminders)
+    // Generate confirmation tokens (only for NEW 24h reminders, not retries).
+    // On retry, the tokens from the first attempt still exist in the DB
+    // and we don't know the raw token values (only hashes are stored).
+    // The retry sends the reminder without action links — the patient
+    // can still confirm/cancel via the portal.
     let confirmUrl: string | null = null
     let cancelUrl: string | null = null
 
-    if (reminder.reminderType === "24h") {
+    if (reminder.reminderType === "24h" && !isRetry) {
       const confirmToken = generateToken()
       const cancelToken = generateToken()
 
@@ -473,26 +512,35 @@ Deno.serve(async (req: Request) => {
       // Token expires at session time
       const expiresAt = reminder.session.scheduled_at
 
-      // Insert confirm token
-      await supabase.from("email_action_tokens").insert({
-        token_hash: confirmHash,
-        purpose: "confirm_attendance",
-        patient_id: reminder.session.patient_id,
-        session_id: reminder.session.id,
-        expires_at: expiresAt,
-      })
+      // W4 fix: check INSERT errors. If token creation fails, send the
+      // reminder without action links rather than sending broken links.
+      const { error: confirmInsertErr } = await supabase
+        .from("email_action_tokens")
+        .insert({
+          token_hash: confirmHash,
+          purpose: "confirm_attendance",
+          patient_id: reminder.session.patient_id,
+          session_id: reminder.session.id,
+          expires_at: expiresAt,
+        })
 
-      // Insert cancel token
-      await supabase.from("email_action_tokens").insert({
-        token_hash: cancelHash,
-        purpose: "cancel_attendance",
-        patient_id: reminder.session.patient_id,
-        session_id: reminder.session.id,
-        expires_at: expiresAt,
-      })
+      const { error: cancelInsertErr } = await supabase
+        .from("email_action_tokens")
+        .insert({
+          token_hash: cancelHash,
+          purpose: "cancel_attendance",
+          patient_id: reminder.session.patient_id,
+          session_id: reminder.session.id,
+          expires_at: expiresAt,
+        })
 
-      confirmUrl = `${siteUrl}/confirmar/${confirmToken}`
-      cancelUrl = `${siteUrl}/confirmar/${cancelToken}`
+      // Only include links if BOTH tokens were created successfully
+      if (!confirmInsertErr && !cancelInsertErr) {
+        confirmUrl = `${siteUrl}/confirmar/${confirmToken}`
+        cancelUrl = `${siteUrl}/confirmar/${cancelToken}`
+      }
+      // If either failed, the email still goes out without action links.
+      // The reminder alone still has value (patient knows about the session).
     }
 
     // Build email
@@ -552,7 +600,8 @@ Deno.serve(async (req: Request) => {
 
         sentCount++
       } else {
-        // Mark as failed — will be retried on next cron run
+        // Mark as failed. The next cron invocation will detect
+        // delivery_status='failed' and retry if within the 2h window.
         await supabase
           .from("session_reminders")
           .update({ delivery_status: "failed" })
@@ -562,7 +611,7 @@ Deno.serve(async (req: Request) => {
         failedCount++
       }
     } catch {
-      // Network error — mark as failed
+      // Network error — mark as failed for retry on next invocation
       await supabase
         .from("session_reminders")
         .update({ delivery_status: "failed" })

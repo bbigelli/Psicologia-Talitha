@@ -92,20 +92,20 @@
 - QA: APROVADO -- docs/talitha-qa-sprint-4.md
 - **Code Review 1: REPROVADO (0B 5W 6S) -- docs/talitha-review-sprint-4.md**
 
-### Code Review Sprint 4 -- Warnings a corrigir
-- **W1:** Late cancellation via email faz throw apos side effect → usuario ve "Erro interno do servidor" para operacao bem-sucedida. Arquivo: `src/lib/actions/confirm-action.ts` linhas 145-188
-- **W2:** Visao diaria em desktop renderiza vazia (DayView md:hidden conflita com wrapper md:block). Arquivo: `src/components/schedule/ScheduleClient.tsx` + `DayView.tsx`
-- **W3:** At-most-once: lembrete com falha nao e reenviado (DoD violada). Arquivo: `supabase/functions/send-reminders/index.ts` linhas 441-459
-- **W4:** Token INSERT sem error check na Edge Function. Arquivo: `supabase/functions/send-reminders/index.ts` linhas 477-492
-- **W5:** `createAdminClient` em confirm-action.ts fora da allowlist de architecture.md secao 6.2. Atualizar allowlist
+### Code Review Sprint 4 -- Warnings corrigidos
+- **W1:** CORRIGIDO. throw-apos-side-effect removido. Retorna `{ action: "cancelled", isLateCancellation }` como sucesso. UI mostra toast.warning informativo
+- **W2:** CORRIGIDO. md:hidden removido de DayView, hidden md:block removido de WeekView. Visibilidade controlada exclusivamente pelo ScheduleClient (pai)
+- **W3:** CORRIGIDO. Retry implementado: UNIQUE violation -> SELECT existing -> se failed e <2h -> UPDATE para pending + resend. Bounded pelo session time window + 2h max retry
+- **W4:** CORRIGIDO. INSERTs de token agora checam erro. Se falhar, email sai sem links de acao (lembrete isolado ainda tem valor)
+- **W5:** REPORTADO. Uso justificado (usuario nao autenticado no link de email). Allowlist de architecture.md §6.2 precisa incluir: `confirm-action.ts` e `confirmar/[token]/page.tsx`
 
-### Suggestions (nao bloqueiam, pendencias tecnicas)
-- S1 (CR Sprint 4): Divergencia de status entre pre-check app e RPC (app exclui completed, RPC inclui)
-- S2 (CR Sprint 4): getScheduleSessions aceita psychologistId em arquivo "use server"
-- S3 (CR Sprint 4): Edge Function sem batch limit
-- S4 (CR Sprint 4): timingSafeEqual manual quando Deno tem nativo
-- S5 (CR Sprint 4): Touch targets navegacao abaixo de 44px
-- S6 (CR Sprint 4): toUTCTimestamp hardcoda -03:00 sem documentar premissa
+### Suggestions
+- S1 (divergencia status): RECUSADA. App pre-check e otimista para UX; RPC e a garantia. Divergencia tratada pelo mapRpcError()
+- S2 (getScheduleSessions psychologistId): RECUSADA. Funcao NAO e exportada como Server Action; e chamada por Server Components que ja autorizaram. O param vem de user.id no server component, nunca do client
+- S3 (batch limit): ACEITA COMO PENDENCIA. Sem batch limit na Edge Function. Para o cenario atual (psicologa solo, ~10-20 sessoes/semana), nao e problema. Registrado para revisitar se escalar
+- S4 (timingSafeEqual nativo): ACEITA COMO PENDENCIA. Deno.subtle.timingSafeEqual existe mas a implementacao manual esta correta (reviewer confirmou). Migrar quando a Edge Function for tocada por outra razao
+- S5 (touch targets): ACEITA. Botoes de navegacao (ChevronLeft/ChevronRight) aumentados para h-10 w-10 (40px)
+- S6 (toUTCTimestamp -03:00): ACEITA. Comentario adicionado documentando a premissa (BRT fixo, sem DST no Brasil desde 2019)
 
 ### Pendencias tecnicas acumuladas
 - **F6 (WARNING):** Politica de senha no Supabase Auth dashboard NAO configurada

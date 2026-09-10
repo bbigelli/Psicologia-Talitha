@@ -1,10 +1,12 @@
 "use client"
 
 /**
- * DayView — daily schedule for mobile view.
+ * DayView — daily schedule in list format.
  *
- * Shows sessions for the current day in a list format.
- * Default on mobile (<768px).
+ * Shows sessions for the current day.
+ * Visibility is controlled by the parent (ScheduleClient), not by
+ * this component — a component that decides its own visibility by
+ * breakpoint cannot be reused in a different context (W2 fix).
  *
  * @see wireframe A.06 (mobile)
  */
@@ -43,7 +45,7 @@ export function DayView({
   }, [sessions, dateStr])
 
   return (
-    <div className="md:hidden space-y-3">
+    <div className="space-y-3">
       <p className="text-center text-sm font-medium capitalize text-muted-foreground">
         {formatDateDisplay(currentDate)}
       </p>

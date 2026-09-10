@@ -48,6 +48,11 @@ const BRAZIL_TZ = "America/Sao_Paulo"
 
 /**
  * Format a date to ISO 8601 string with Brazil offset for timestamptz.
+ *
+ * Hardcodes -03:00 (BRT). Brazil abolished daylight saving time in 2019
+ * (Decreto 9.772/2019), so America/Sao_Paulo is permanently UTC-3.
+ * If DST is ever reinstated, this function must use Intl to resolve
+ * the offset dynamically for the given date.
  */
 function toUTCTimestamp(dateStr: string, timeStr: string): string {
   const [hours, minutes] = timeStr.split(":").map(Number)

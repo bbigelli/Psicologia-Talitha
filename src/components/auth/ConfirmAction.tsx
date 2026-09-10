@@ -78,11 +78,23 @@ export function ConfirmAction({
       })
 
       if (result.success) {
-        toast.success(
-          purpose === "confirm_attendance"
-            ? "Presenca confirmada com sucesso."
-            : "Compromisso cancelado.",
-        )
+        const outcome = result.data as {
+          action?: string
+          isLateCancellation?: boolean
+        } | null
+
+        if (outcome?.action === "cancelled" && outcome.isLateCancellation) {
+          // W1 fix: side effect already committed — show success with warning,
+          // never an error message for an operation that succeeded.
+          toast.warning(
+            "Compromisso cancelado. Como foi fora do prazo, a sessao podera ser cobrada.",
+            { duration: 8000 },
+          )
+        } else if (outcome?.action === "cancelled") {
+          toast.success("Compromisso cancelado com sucesso.")
+        } else {
+          toast.success("Presenca confirmada com sucesso.")
+        }
         router.push("/login")
       } else {
         toast.error(result.error)
