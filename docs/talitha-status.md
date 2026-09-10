@@ -1,6 +1,6 @@
 # Status: talitha-psicologia
-## Fase atual: Execucao -- Sprint 3 QA APROVADA COM RESSALVA
-## Ultimo agente: QA Agent (Sprint 3)
+## Fase atual: Execucao -- Sprint 3 Code Review REPROVADO (0B 2W)
+## Ultimo agente: Code Reviewer (Sprint 3)
 ## Branch: feature/sprint-3-patients
 
 ### Planejamento
@@ -149,16 +149,27 @@
   - Patient CPF round-trip OK
   - Hex SEM prefixo -> decrypt FALHA (prova do bug)
 
-### Pendencias acumuladas
+### Code Review Sprint 3: REPROVADO (0B 2W 5S) -- docs/talitha-review-sprint-3.md
+- **W1:** hasActiveConsents, middleware e patient layout NAO verificam consent_version contra CURRENT_CONSENT_VERSION. Re-aceite apos bump de versao nao e enforced
+- **W2:** acceptConsent, acceptMultipleConsents e revokeConsent NAO chamam .parse() com os schemas zod existentes. Validacao em runtime ausente na boundary
+- S1: ConsentSection scroll container nao e keyboard-focusable
+- S2: acceptInvite audit log action label errado ("ACCEPT_CONSENT" em vez de "ACCEPT_INVITE")
+- S3: admin client allowlist na architecture.md nao menciona consumo de convite
+- S4: date formatting helpers duplicados
+- S5: envelopeToBytea retorna tipo generico (Record)
+- Decisoes avaliadas: acceptInvite sem wrapper (saudavel), createPatient com admin (adequado), hashes com teste CI (protegido)
+
+### Pendencias tecnicas acumuladas
 - **F6 (WARNING):** Politica de senha no Supabase Auth dashboard NAO configurada
-- S1: middleware.ts deprecation
-- S4: ProfileForm exige CPF em toda edicao
-- S6: Sidebar mobile sem Vaul
-- S7: x-forwarded-for trust rule ausente
-- S10: Considerar wrapper withAuthenticatedUser
-- S11: eslint error em MfaSetup.tsx
-- EMAIL_FROM e RESEND_API_KEY_APP nao adicionados ao .env.example (permissao negada)
-- W1: unused imports na Sprint 3 (4 arquivos)
+- S1 (Sprint 2): middleware.ts deprecation
+- S4 (Sprint 2): ProfileForm exige CPF em toda edicao
+- S6 (Sprint 2): Sidebar mobile sem Vaul
+- S7 (Sprint 2): x-forwarded-for trust rule ausente
+- S10 (Sprint 2): Considerar wrapper withAuthenticatedUser
+- S11 (Sprint 2): eslint error em MfaSetup.tsx
+- EMAIL_FROM e RESEND_API_KEY_APP nao adicionados ao .env.example
+- W1 (QA Sprint 3): unused imports na Sprint 3
+- S1-S5 (CR Sprint 3): ver docs/talitha-review-sprint-3.md
 
 ### Proximo passo
-BLOCKER-1 corrigido. Sprint 3 pronta. Avancar para Sprint 4 -- Agenda & Lembretes.
+Stack agent corrige W1 e W2 do Code Review Sprint 3. Apos correcao, Code Review roda novamente.
