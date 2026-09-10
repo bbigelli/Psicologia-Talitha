@@ -1,6 +1,6 @@
 # Status: talitha-psicologia
-## Fase atual: Execucao -- Sprint 2 IMPLEMENTADA (aguardando Code Review + QA)
-## Ultimo agente: Next.js Agent (Sprint 2)
+## Fase atual: Execucao -- Sprint 2 CODE REVIEW REPROVADO (1 Blocker, 1 Warning)
+## Ultimo agente: Code Reviewer (Sprint 2)
 ## Branch: feature/sprint-2-auth
 
 ### Planejamento
@@ -20,31 +20,30 @@
 - QA: APROVADO (91 testes, 90 passando)
 - 4 patches aplicados
 
-### Sprint 2: Autenticacao & MFA -- IMPLEMENTADA
+### Sprint 2: Autenticacao & MFA -- CODE REVIEW REPROVADO
 - Task 2.1: Login e callback de autenticacao -- CONCLUIDA
-- Task 2.2: MFA TOTP (setup e verificacao) -- CONCLUIDA
-- Task 2.3: Recuperacao de senha -- CONCLUIDA
+- Task 2.2: MFA TOTP (setup e verificacao) -- CONCLUIDA (Warning: recovery codes mislabeled/non-functional)
+- Task 2.3: Recuperacao de senha -- BLOCKER: troca de senha sem MFA server-side
 - Task 2.4: Middleware completo -- CONCLUIDA
 - Task 2.5: Layouts de area (5 route groups) -- CONCLUIDA
 - Task 2.6: Onboarding e perfil da psicologa -- CONCLUIDA
-- Seed de usuarios de desenvolvimento: CONCLUIDO (scripts/seed-dev-users.ts)
-- Credenciais de teste: docs/credentials.md (git-ignored)
-- Build: PASSA (npm run build sem erros)
-- TypeScript: PASSA (npx tsc --noEmit limpo)
-- Testes: 147 total (146 passando, 1 pulado) -- SEM REGRESSAO (era 91 na Sprint 1)
-- Code Review: PENDENTE
-- QA: PENDENTE
+- Code Review: REPROVADO (docs/talitha-review-sprint-2.md)
+  - B1: updateUser callable at aal1 -- mover para Server Action com withPsychologist
+  - W1: Recovery codes mislabeled + non-functional -- remover feature ficticia ou implementar de verdade
+- QA: PENDENTE (aguarda correcao dos blockers/warnings)
 
-### Dados de teste no banco
-- 4 entradas no audit_log da Sprint 1
-- 2 usuarios criados via seed: psicologa e paciente de teste
-- Perfis criados em profiles para ambos
-
-### Pendencias tecnicas (nao bloqueantes, herdadas da Sprint 1)
-- S1: Adicionar ASAAS_BASE_URL ao .env.example
-- S2: Adicionar --destructive-foreground ao globals.css
-- S6: Remover toast.tsx duplicado
-- S7: Corrigir referencia --font-geist-mono
+### Pendencias tecnicas (nao bloqueantes)
+- S1: middleware.ts deprecation warning Next.js 16 -- avaliar na Sprint 8
+- S2: Seed patients insert falha por NOT NULL constraint em cpf_ciphertext -- atualizar na Sprint 3
+- S3: Seed sobrescreve credentials.md -- considerar merge ou arquivo separado
+- S4: ProfileForm exige CPF em toda edicao -- criar profileUpdateSchema com CPF opcional
+- S5: MfaCodeInput touch target 40px no mobile -- alterar w-10 para w-11
+- S6: Sidebar mobile nao usa Vaul -- integrar em sprint futura
+- S7: x-forwarded-for trust rule ausente no middleware -- implementar com audit logging
+- S8: MfaSetup.tsx com 311 linhas -- extrair util e subcomponentes
+- S9: Politica de senha no Supabase Auth -- QA deve verificar config do dashboard
+- (Sprint 1) S1: ASAAS_BASE_URL ausente no .env.example
+- (Sprint 1) S3: safeErrorCode() sem uso em producao
 
 ### Proximo passo
-Ativar Code Review para Sprint 2, seguido de QA.
+Stack agent corrige B1 e W1 conforme report. Code Review roda novamente.
