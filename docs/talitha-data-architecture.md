@@ -1,6 +1,6 @@
 # Data Architecture: Talitha Psicologia
 
-**Versao:** 1.8
+**Versao:** 1.9
 **Data:** 2026-09-09
 **Referencia:** `docs/talitha-architecture.md` (v1.1, secao 17), `docs/talitha-security-review-architecture.md` (secao 4), `docs/talitha-security-review-schema.md` (patches A1-A4, M1, B1-B2, R19), `docs/talitha-security-review-prd.md`, `docs/talitha-prd.md` (emendas E1-E8), `docs/adr/ADR-0001..0006`, `CLAUDE.md`, `docs/decisions.md`
 
@@ -107,9 +107,25 @@ SO psicologa, aal2. DELETE pela psicologa ao salvar evolucao.
 
 Maquina de estados monotonica (trigger). Status: pending_creation, pending, overdue, paid, refunded, chargeback, cancelled.
 
-### 9-12. subscriptions, payment_webhook_events, receipt_counters, receipts
+### 9. subscriptions
 
-Conforme v1.0. Webhook sem payload bruto. Contador transacional (FOR UPDATE). Receipts UNIQUE(charge_id).
+Maquina de estados monotonica (trigger, como charges). Status: `pending_creation` (default), `active`, `paused`, `cancelled`, `creation_failed`.
+
+```
+pending_creation -> active | creation_failed
+active -> paused | cancelled
+paused -> active | cancelled
+creation_failed -> (terminal — retry cria nova linha)
+cancelled -> (terminal — retry cria nova linha)
+```
+
+UNIQUE parcial: `WHERE status IN ('pending_creation', 'active', 'paused')` — linhas mortas (cancelled, creation_failed) nao bloqueiam nova assinatura.
+
+`asaas_customer_id` nao vive aqui: e atributo do paciente (`patients.asaas_customer_id`, migration 18). A subscription referencia o paciente, e o paciente carrega o customer ID.
+
+### 10-12. payment_webhook_events, receipt_counters, receipts
+
+Webhook sem payload bruto. Contador transacional (FOR UPDATE). Receipts UNIQUE(charge_id).
 
 ### 13. consents
 
@@ -186,6 +202,7 @@ UNIQUE constraints de banco para idempotencia.
 | `fn_profiles_sync_role_metadata` | profiles | AFTER INSERT/UPDATE OF role | Espelha role em app_metadata (SD) |
 | `fn_sessions_on_reschedule` | sessions | BEFORE UPDATE | Regenera room_name, zera waiting/admitted |
 | `fn_charges_monotonic_status` | charges | BEFORE UPDATE OF status | Impede regressao de status |
+| `fn_subscriptions_monotonic_status` | subscriptions | BEFORE UPDATE OF status | Maquina de estados monotonica para assinaturas |
 | `fn_patients_set_retention` | patients | BEFORE UPDATE | A2: auto-calcula retention_until, impede reducao |
 | `fn_block_delete_patient_retention` | patients | BEFORE DELETE | Bloqueia DELETE de paciente durante retencao (lê treatment_ended_at direto) |
 | `fn_block_delete_clinical_retention` | clinical_records, anamnesis, remote_viability | BEFORE DELETE | N1: bloqueia DELETE clinico durante retencao (resolve treatment_ended_at via patient_id JOIN) |
@@ -458,9 +475,27 @@ SELECT asaas_customer_id FROM patients LIMIT 1;
 -- ESPERADO: ERROR 42501 (column not in GRANT SELECT)
 RESET ROLE;
 ```
+
+### V22. Subscriptions state machine e UNIQUE parcial
+
+```sql
+-- Transicao valida: pending_creation -> active
+UPDATE subscriptions SET status = 'active' WHERE id = '<sub_id>';
+-- ESPERADO: sucesso
+
+-- Transicao invalida: active -> pending_creation (regressao)
+UPDATE subscriptions SET status = 'pending_creation' WHERE id = '<sub_id>';
+-- ESPERADO: ERROR Invalid subscription status transition: active -> pending_creation
+
+-- UNIQUE parcial: duas linhas cancelled + uma pending_creation para o mesmo paciente
+-- (simular com service_role apos marcar duas como creation_failed/cancelled)
+INSERT INTO subscriptions (patient_id, psychologist_id, monthly_value, billing_day, sessions_per_cycle)
+VALUES ('<patient_id>', '<psych_id>', 800, 10, 4);
+-- ESPERADO: sucesso (status default pending_creation, UNIQUE parcial permite)
+```
 ---
 
-## Decisoes (v1.8)
+## Decisoes (v1.9)
 
 | Decisao | Alternativa descartada | Motivo |
 |---------|----------------------|--------|
@@ -478,7 +513,7 @@ RESET ROLE;
 | F5: fn_is_psychologist() SD + STABLE | JWT claim (auth.jwt()->app_metadata->role) | Preserva R13: policies leem a fonte canonica (profiles.role no banco), nao um claim JWT que pode estar stale. A funcao SD bypassa a RLS de profiles, eliminando 42P17. STABLE = avaliada uma vez por query, nao por linha |
 ---
 
-## Migrations (v1.8)
+## Migrations (v1.9)
 
 | Arquivo | Conteudo |
 |---------|----------|
@@ -500,8 +535,9 @@ RESET ROLE;
 | `20260909121500_patch_f5_rls_recursion.sql` | **F5:** fn_is_psychologist() SD+STABLE + DROP/CREATE 13 policies. **F5b:** GRANT UPDATE cipher columns em profiles |
 | `20260909121600_rpc_create_reschedule_session.sql` | `create_session` + `reschedule_session` RPCs SD. Conflito de horario por overlap de intervalo. REVOKE triplo |
 | `20260909121700_add_asaas_customer_id.sql` | `patients.asaas_customer_id TEXT UNIQUE`. D11 Interno, sem cifra. Escrito por service_role. Excluido do SELECT grant. Eliminavel |
+| `20260909121800_subscriptions_pending_creation.sql` | `pending_creation` + `creation_failed` em subscriptions. Default `pending_creation`. UNIQUE parcial (live only). Trigger monotonic state machine |
 
-**17 migrations aplicadas. Migration 18 (asaas_customer_id) pendente.
+**18 migrations aplicadas. Migration 19 (subscriptions pending_creation) pendente.
 
 ---
 
@@ -518,3 +554,4 @@ RESET ROLE;
 | 1.6 | 2026-09-09 | F5: fn_is_psychologist() SD+STABLE elimina 42P17 em 13 policies. R13 preservado (leitura de profiles.role no banco, nao JWT). F5b: GRANT UPDATE cipher columns em profiles. V19 adicionada. 10 RPCs SD. Regras de self-ref e has_function_privilege adicionadas ao CLAUDE.md. |
 | 1.7 | 2026-09-10 | Sprint 4: create_session + reschedule_session RPCs SD. psychologist_id de auth.uid(), conflito por overlap de intervalo, aal2, ownership. 12 RPCs SD. V20. |
 | 1.8 | 2026-09-10 | Sprint 5: patients.asaas_customer_id TEXT UNIQUE. D11 Interno, sem cifra, service_role only, excluido de SELECT grant, eliminavel por LGPD. V21. |
+| 1.9 | 2026-09-10 | Sprint 5: subscriptions status (pending_creation, creation_failed). Default pending_creation. UNIQUE parcial (live only). Trigger monotonic. asaas_customer_id vive em patients, nao em subscriptions. V22. |

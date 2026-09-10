@@ -1,7 +1,7 @@
 # Status: talitha-psicologia
-## Fase atual: Execucao -- Sprint 4 CODE REVIEW APROVADO, pronta para Sprint 5
-## Ultimo agente: Code Reviewer (Sprint 4, rodada 2)
-## Branch: feature/sprint-4-schedule
+## Fase atual: Execucao -- Sprint 5 CODE REVIEW REPROVADO (5B 10W 5S)
+## Ultimo agente: Code Reviewer (Sprint 5)
+## Branch: feature/sprint-5-financial
 
 ### Planejamento
 - Decisoes de stack e escopo: OK (docs/decisions.md)
@@ -10,7 +10,7 @@
 - Design & UI: OK (docs/talitha-design-system.md + docs/talitha-wireframes.md + docs/talitha-navigation-flow.md)
 - System Architect: OK v1.1 (docs/talitha-architecture.md + docs/adr/ + CLAUDE.md)
 - Security Review (arquitetura): APROVADA -- 8/8 correcoes fechadas
-- Data Architect: OK v1.6 (docs/talitha-data-architecture.md + supabase/migrations/)
+- Data Architect: OK v1.9 (docs/talitha-data-architecture.md + supabase/migrations/)
 - Security Review (schema): APROVADO
 - Backlog: CONCLUIDO (docs/talitha-backlog.md)
 
@@ -43,12 +43,22 @@
 - QA: APROVADO -- docs/talitha-qa-sprint-4.md (408 testes passando)
 - Code Review 1: REPROVADO (0B 5W 6S)
 - Stack Agent: W1-W5 corrigidos, S5-S6 aplicadas, S1-S2 recusadas, S3-S4 pendencias
-- **Code Review 2 (rodada 2): APROVADO** -- docs/talitha-review-sprint-4.md
-  - W1 (throw apos side effect): FECHADO
-  - W2 (desktop day-view): FECHADO
-  - W3 (at-most-once -> retry): FECHADO (riscos de concorrencia residuais registrados para Sprint 8)
-  - W4 (token INSERT): FECHADO
-  - W5 (allowlist): FECHADO (reportado ao Architect)
+- Code Review 2 (rodada 2): APROVADO -- docs/talitha-review-sprint-4.md
+
+### Sprint 5: Financeiro & Asaas -- REPROVADA (Code Review)
+- Task 5.1: Edge Functions infra Asaas -- Parcial (manage-asaas-customer nao grava patients.asaas_customer_id)
+- Task 5.2: Cobranca avulsa -- OK
+- Task 5.3: Webhook de conciliacao -- FALHA (B1 idempotencia, B2 200 silencioso, B3 subscription_charge_create_failed)
+- Task 5.4: Assinatura recorrente -- FALHA (W1 status lifecycle, B4 cancel nao propaga Asaas)
+- Task 5.5: Regua de cobranca -- OK
+- Task 5.6: Painel de inadimplentes -- Parcial (falta paginacao)
+- Task 5.7: Historico pagamentos paciente -- Parcial (URL sandbox hardcoded)
+- **Code Review 1: REPROVADO** -- docs/talitha-review-sprint-5.md
+  - B1: Idempotencia webhook quebrada (Date.now no event ID)
+  - B2: 200 para handled events sem payment.id
+  - B3: subscription_charge_create_failed retorna 200 para erros nao-duplicate
+  - B4: cancelSubscription nao cancela no Asaas
+  - B5: patients.asaas_customer_id nunca escrito (data-architecture v1.8/v1.9)
 
 ### Pendencias tecnicas acumuladas
 - **F6 (WARNING):** Politica de senha no Supabase Auth dashboard NAO configurada
@@ -67,6 +77,11 @@
 - S4 (CR Sprint 4): timingSafeEqual manual vs nativo do Deno
 - Edge Function retry: riscos residuais de pending orfao e duplicacao sob concorrencia (hardening Sprint 8)
 - Deploy da Edge Function send-reminders PENDENTE
+- S1 (CR Sprint 5): timingSafeEqual early return leaks length
+- S2 (CR Sprint 5): manage-asaas-customer sem consent check independente
+- S3 (CR Sprint 5): CPF em query parameter no Asaas search
+- S4 (CR Sprint 5): timingSafeEqual duplicado em 3 EFs
+- S5 (CR Sprint 5): select nativo em vez de shadcn Select
 
 ### Proximo passo
-Avancar para Sprint 5 -- Financeiro & Asaas.
+Stack agent corrige os 5 blockers + 10 warnings do Code Review Sprint 5. Code Review roda novamente.
