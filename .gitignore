@@ -14,8 +14,9 @@ build/
 .env*
 !.env.example
 
-# credentials (git-ignored doc with real secrets)
+# credentials (git-ignored docs with real secrets)
 docs/credentials.md
+docs/seed-credentials.md
 
 # misc
 .DS_Store

@@ -16,6 +16,11 @@ const TEST_CPF_KEY = Buffer.alloc(32, 0xbb).toString("base64")
  */
 const ALLOWED_ENV_KEYS = new Set([
   "SUPABASE_SERVICE_ROLE_KEY",
+  // Seed user credentials for authenticated integration tests (Sprint 2+)
+  "SEED_PSYCHOLOGIST_EMAIL",
+  "SEED_PSYCHOLOGIST_PASSWORD",
+  "SEED_PATIENT_EMAIL",
+  "SEED_PATIENT_PASSWORD",
 ])
 
 function loadTestEnvVars(): Record<string, string> {
