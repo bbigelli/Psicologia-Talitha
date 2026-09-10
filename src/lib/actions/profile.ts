@@ -6,7 +6,7 @@ import {
   onboardingSchema,
   type OnboardingFormInput,
 } from "@/schemas/profile"
-import { encrypt } from "@/lib/crypto/envelope"
+import { encrypt, hexToBytea } from "@/lib/crypto/envelope"
 
 /**
  * Complete onboarding — saves professional profile data.
@@ -39,12 +39,12 @@ export const completeOnboarding = withPsychologist(
         specialty: parsed.specialty ?? null,
         default_session_value: parsed.default_session_value,
         cancellation_policy_hours: parsed.cancellation_policy_hours,
-        cpf_ciphertext: cpfEnvelope.contentCiphertext,
-        cpf_iv: cpfEnvelope.contentIv,
-        cpf_tag: cpfEnvelope.contentTag,
-        cpf_dek_wrapped: cpfEnvelope.dekWrapped,
-        cpf_dek_iv: cpfEnvelope.dekIv,
-        cpf_dek_tag: cpfEnvelope.dekTag,
+        cpf_ciphertext: hexToBytea(cpfEnvelope.contentCiphertext),
+        cpf_iv: hexToBytea(cpfEnvelope.contentIv),
+        cpf_tag: hexToBytea(cpfEnvelope.contentTag),
+        cpf_dek_wrapped: hexToBytea(cpfEnvelope.dekWrapped),
+        cpf_dek_iv: hexToBytea(cpfEnvelope.dekIv),
+        cpf_dek_tag: hexToBytea(cpfEnvelope.dekTag),
         cpf_kek_version: cpfEnvelope.kekVersion,
         onboarding_completed: true,
       })
@@ -86,12 +86,12 @@ export const updateProfile = withPsychologist(
         specialty: parsed.specialty ?? null,
         default_session_value: parsed.default_session_value,
         cancellation_policy_hours: parsed.cancellation_policy_hours,
-        cpf_ciphertext: cpfEnvelope.contentCiphertext,
-        cpf_iv: cpfEnvelope.contentIv,
-        cpf_tag: cpfEnvelope.contentTag,
-        cpf_dek_wrapped: cpfEnvelope.dekWrapped,
-        cpf_dek_iv: cpfEnvelope.dekIv,
-        cpf_dek_tag: cpfEnvelope.dekTag,
+        cpf_ciphertext: hexToBytea(cpfEnvelope.contentCiphertext),
+        cpf_iv: hexToBytea(cpfEnvelope.contentIv),
+        cpf_tag: hexToBytea(cpfEnvelope.contentTag),
+        cpf_dek_wrapped: hexToBytea(cpfEnvelope.dekWrapped),
+        cpf_dek_iv: hexToBytea(cpfEnvelope.dekIv),
+        cpf_dek_tag: hexToBytea(cpfEnvelope.dekTag),
         cpf_kek_version: cpfEnvelope.kekVersion,
       })
       .eq("id", ctx.profileId)
