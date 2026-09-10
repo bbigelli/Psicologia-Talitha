@@ -1,6 +1,6 @@
 # Data Architecture: Talitha Psicologia
 
-**Versao:** 1.5
+**Versao:** 1.6
 **Data:** 2026-09-09
 **Referencia:** `docs/talitha-architecture.md` (v1.1, secao 17), `docs/talitha-security-review-architecture.md` (secao 4), `docs/talitha-security-review-schema.md` (patches A1-A4, M1, B1-B2, R19), `docs/talitha-security-review-prd.md`, `docs/talitha-prd.md` (emendas E1-E8), `docs/adr/ADR-0001..0006`, `CLAUDE.md`, `docs/decisions.md`
 
@@ -204,6 +204,7 @@ UNIQUE constraints de banco para idempotencia.
 | `consume_email_token` | R19: valida expiracao, uso unico, purpose match atomicamente |
 | `fn_verify_audit_chain` | Recalcula e verifica integridade do hash chain |
 | `fn_anchor_audit_chain` | Verificacao automatizada do chain para cron/ancora (service_role only, retorno minimo) |
+| `fn_is_psychologist` | Helper STABLE SD para policies RLS. Le profiles.role bypassando RLS (evita 42P17). R13 preservado |
 | `fn_profiles_sync_role_metadata` | Espelha role em app_metadata (trigger SD) |
 
 ---
@@ -390,9 +391,32 @@ WHERE n.nspname = 'public'
 -- Se retornar linhas: aplicar REVOKE FROM PUBLIC, anon, authenticated
 -- + GRANT TO <roles> para cada funcao listada
 ```
+
+### V19. Sessao autenticada le profiles sem recursao (F5)
+
+```sql
+-- Como psychologist autenticada:
+SET ROLE authenticated;
+SET request.jwt.claim.sub = '<psychologist_uid>';
+SET request.jwt.claims = '{"role":"authenticated","aal":"aal2"}';
+SELECT id, role, full_name FROM profiles;
+-- ESPERADO: retorna linhas (todos os profiles) sem erro 42P17
+
+-- Como patient autenticado:
+SET request.jwt.claim.sub = '<patient_uid>';
+SET request.jwt.claims = '{"role":"authenticated"}';
+SELECT id, role, full_name FROM profiles;
+-- ESPERADO: retorna o proprio profile + profile da psicologa, sem 42P17
+RESET ROLE;
+```
+
+**Licao:** policy com subquery na propria tabela causa 42P17. Teste com
+sessao anonima nao exercita o branch autenticado — o resultado vazio e
+indistinguivel de "corretamente bloqueado". O bug so aparece no primeiro
+teste com sessao real.
 ---
 
-## Decisoes (v1.5)
+## Decisoes (v1.6)
 
 | Decisao | Alternativa descartada | Motivo |
 |---------|----------------------|--------|
@@ -407,9 +431,10 @@ WHERE n.nspname = 'public'
 
 | F2/F4: REVOKE triplo obrigatorio | REVOKE de apenas uma fonte | No Supabase, EXECUTE vem de DUAS fontes independentes: heranca de PUBLIC (padrao Postgres) e grants diretos a anon/authenticated (ALTER DEFAULT PRIVILEGES do Supabase). Revogar de uma nao toca a outra. Padrao canonico: REVOKE FROM PUBLIC, anon, authenticated; GRANT TO <roles>. As tres revogacoes sao obrigatorias |
 | Anchor: funcao separada (fn_anchor_audit_chain) | Permitir service_role na fn_verify_audit_chain existente | Menor privilegio: cron precisa de pass/fail + payload, nao de broken_at_id diagnostico. Superficie menor para automatizacao. Separacao de preocupacoes: investigacao interativa (psicologa) vs health check (cron) |
+| F5: fn_is_psychologist() SD + STABLE | JWT claim (auth.jwt()->app_metadata->role) | Preserva R13: policies leem a fonte canonica (profiles.role no banco), nao um claim JWT que pode estar stale. A funcao SD bypassa a RLS de profiles, eliminando 42P17. STABLE = avaliada uma vez por query, nao por linha |
 ---
 
-## Migrations (v1.5)
+## Migrations (v1.6)
 
 | Arquivo | Conteudo |
 |---------|----------|
@@ -428,8 +453,9 @@ WHERE n.nspname = 'public'
 | `20260909121200_patch_f1_f2_f3.sql` | **F1:** NULL-safe comparisons em 8 RPCs (IS DISTINCT FROM). **F2:** REVOKE EXECUTE FROM PUBLIC + GRANT explicito. **F3:** extensions.digest() e extensions.gen_random_bytes() em 3 funcoes SD |
 | `20260909121300_patch_verify_chain_split.sql` | Split: fn_verify_audit_chain (psychologist, diagnostico) + **fn_anchor_audit_chain** (service_role, ancora). REVOKE service_role de fn_verify. V17 |
 | `20260909121400_patch_f4_canonical_grants.sql` | **F4 fix:** REVOKE triplo (PUBLIC, anon, authenticated) + GRANT explicito em todas as 9 funcoes. Padrao canonico estabelecido |
+| `20260909121500_patch_f5_rls_recursion.sql` | **F5:** fn_is_psychologist() SD+STABLE + DROP/CREATE 13 policies. **F5b:** GRANT UPDATE cipher columns em profiles |
 
-**14 migrations aplicadas. Migration 15 (patch F4 + canonical grants) pendente.
+**15 migrations aplicadas. Migration 16 (F5 RLS recursion) pendente.
 
 ---
 
@@ -443,3 +469,4 @@ WHERE n.nspname = 'public'
 | 1.3 | 2026-09-09 | F1: NULL-safety em 8 RPCs/triggers (IS DISTINCT FROM). F2: REVOKE FROM PUBLIC + GRANT explicito em 8 funcoes. F3: schema-qualify pgcrypto (extensions.digest, extensions.gen_random_bytes) em 3 funcoes SD. V11 reescrita (teste funcional). V15-V16 adicionadas. Licao F2 registrada nas decisoes. |
 | 1.4 | 2026-09-09 | Anchor split: fn_verify_audit_chain (psychologist only) + fn_anchor_audit_chain (service_role only, retorno minimo). REVOKE service_role de fn_verify. V17 adicionada. 9 RPCs SD. |
 | 1.5 | 2026-09-09 | F4: REVOKE triplo canonico (PUBLIC + anon + authenticated) em todas as 9 funcoes. Corrige fn_anchor_audit_chain acessivel por anon. Licao F2 corrigida: duas fontes independentes de privilegio, nao uma. V11 reescrita com fn_anchor. V18 generica (has_function_privilege sweep). Regra adicionada ao CLAUDE.md. |
+| 1.6 | 2026-09-09 | F5: fn_is_psychologist() SD+STABLE elimina 42P17 em 13 policies. R13 preservado (leitura de profiles.role no banco, nao JWT). F5b: GRANT UPDATE cipher columns em profiles. V19 adicionada. 10 RPCs SD. Regras de self-ref e has_function_privilege adicionadas ao CLAUDE.md. |

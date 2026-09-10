@@ -51,3 +51,5 @@
   GRANT EXECUTE ON FUNCTION f TO <roles_permitidos>;
   ```
   As tres revogacoes sao obrigatorias, nao redundantes. Omitir qualquer uma deixa a funcao acessivel a usuarios nao autorizados. Aplicar **imediatamente apos o CREATE FUNCTION**, na mesma migration.
+- **Policies RLS nunca fazem subquery na propria tabela.** Causa `42P17` (recursao infinita). Para verificar papel do usuario em policies de `profiles` ou de qualquer tabela que precise do papel, usar `fn_is_psychologist()` — funcao `SECURITY DEFINER` + `STABLE` que le `profiles.role` diretamente, bypassando a RLS da propria tabela. Preserva R13 (profiles.role como fonte canonica, nao JWT claim). Jamais usar `EXISTS (SELECT 1 FROM profiles ...)` dentro de uma policy de profiles.
+- **Verificacao com `has_function_privilege`.** Nunca consultar a tabela de grants procurando entrada de `anon` — a ausencia de grant direto nao significa ausencia de privilegio. Usar `has_function_privilege('anon', 'f()', 'EXECUTE')` para testar o privilegio efetivo.
