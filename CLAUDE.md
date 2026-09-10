@@ -45,3 +45,9 @@
 - `docs/adr/` -- Architecture Decision Records (ADR-0001 a ADR-0006)
 - `docs/decisions.md` -- decisoes de produto e tecnicas em conversa
 - `docs/talitha-status.md` -- progresso atual
+- **Toda funcao Postgres nova recebe REVOKE triplo + GRANT explicito.** No Supabase, funcoes nascem com EXECUTE de DUAS fontes independentes: heranca de `PUBLIC` (padrao PostgreSQL) e grants diretos a `anon`/`authenticated` (criados pelo `ALTER DEFAULT PRIVILEGES` do Supabase). Revogar de uma nao toca a outra. O padrao canonico e:
+  ```sql
+  REVOKE EXECUTE ON FUNCTION f FROM PUBLIC, anon, authenticated;
+  GRANT EXECUTE ON FUNCTION f TO <roles_permitidos>;
+  ```
+  As tres revogacoes sao obrigatorias, nao redundantes. Omitir qualquer uma deixa a funcao acessivel a usuarios nao autorizados. Aplicar **imediatamente apos o CREATE FUNCTION**, na mesma migration.

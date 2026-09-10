@@ -1,6 +1,6 @@
 # Data Architecture: Talitha Psicologia
 
-**Versao:** 1.4
+**Versao:** 1.5
 **Data:** 2026-09-09
 **Referencia:** `docs/talitha-architecture.md` (v1.1, secao 17), `docs/talitha-security-review-architecture.md` (secao 4), `docs/talitha-security-review-schema.md` (patches A1-A4, M1, B1-B2, R19), `docs/talitha-security-review-prd.md`, `docs/talitha-prd.md` (emendas E1-E8), `docs/adr/ADR-0001..0006`, `CLAUDE.md`, `docs/decisions.md`
 
@@ -276,21 +276,21 @@ UPDATE patients SET retention_until = now() WHERE id = '<patient_id>';
 -- ESPERADO: ERROR: Cannot reduce retention_until
 ```
 
-### V11. RPCs nao executaveis por anon (F2 — teste funcional, nao catalogo)
+### V11. Nenhuma RPC executavel por anon (F2/F4 — teste funcional)
 
 ```sql
--- Teste FUNCIONAL, nao declarativo. A versao anterior consultava
--- o catalogo de grants e dava falso positivo porque o privilegio
--- efetivo vinha de PUBLIC, nao de um grant direto a anon.
+-- Teste funcional por funcao: DEVE retornar 42501 (permission denied),
+-- NAO P0001 (excecao PL/pgSQL interna). Se retornar P0001, o REVOKE
+-- nao cobriu ambas as fontes de privilegio (PUBLIC + grant direto).
 SET ROLE anon;
 SELECT enter_waiting_room(gen_random_uuid());
--- ESPERADO: ERROR 42501 (permission denied for function enter_waiting_room)
--- Se receber P0001 (excecao PL/pgSQL) em vez de 42501, o REVOKE FROM PUBLIC nao foi aplicado.
+-- ESPERADO: ERROR 42501
 SELECT fn_verify_audit_chain();
+-- ESPERADO: ERROR 42501
+SELECT fn_anchor_audit_chain();
 -- ESPERADO: ERROR 42501
 RESET ROLE;
 ```
-
 ### V12. Hash chain sob concorrencia
 
 ```sql
@@ -370,9 +370,29 @@ SELECT * FROM fn_verify_audit_chain();
 -- ESPERADO: ERROR 42501 (permission denied — REVOKE service_role aplicado)
 RESET ROLE;
 ```
+
+### V18. Varredura generica de privilegios — nenhuma funcao publica aberta para anon
+
+```sql
+-- Verifica o privilegio EFETIVO (nao grants do catalogo) de anon
+-- em todas as funcoes nao-trigger do schema public.
+-- DEVE retornar 0 linhas. Qualquer linha e uma funcao acessivel
+-- a clientes nao autenticados.
+SELECT p.proname AS function_name,
+       pg_catalog.pg_get_function_identity_arguments(p.oid) AS args
+FROM pg_proc p
+JOIN pg_namespace n ON p.pronamespace = n.oid
+LEFT JOIN pg_type rt ON rt.oid = p.prorettype
+WHERE n.nspname = 'public'
+  AND rt.typname IS DISTINCT FROM 'trigger'
+  AND has_function_privilege('anon', p.oid, 'EXECUTE') = true;
+-- ESPERADO: 0 linhas
+-- Se retornar linhas: aplicar REVOKE FROM PUBLIC, anon, authenticated
+-- + GRANT TO <roles> para cada funcao listada
+```
 ---
 
-## Decisoes (v1.4)
+## Decisoes (v1.5)
 
 | Decisao | Alternativa descartada | Motivo |
 |---------|----------------------|--------|
@@ -385,11 +405,11 @@ RESET ROLE;
 | A4: table-level REVOKE + column-level GRANT | Column-level REVOKE | Supabase default privileges podem anular column-level REVOKE; abordagem invertida e a unica confiavel |
 | A3: consents com 3 triggers + FORCE RLS + REVOKE | Apenas RLS sem UPDATE/DELETE | Mesma protecao do audit_log; valor probatorio identico (prova de consentimento) |
 
-| F2: REVOKE FROM PUBLIC, nao de role | REVOKE FROM anon (ineficaz) | Em PostgreSQL, funcoes recebem EXECUTE para PUBLIC por padrao na criacao. REVOKE de role nao remove privilegio herdado de PUBLIC. Deve-se REVOKE FROM PUBLIC + GRANT explicito |
+| F2/F4: REVOKE triplo obrigatorio | REVOKE de apenas uma fonte | No Supabase, EXECUTE vem de DUAS fontes independentes: heranca de PUBLIC (padrao Postgres) e grants diretos a anon/authenticated (ALTER DEFAULT PRIVILEGES do Supabase). Revogar de uma nao toca a outra. Padrao canonico: REVOKE FROM PUBLIC, anon, authenticated; GRANT TO <roles>. As tres revogacoes sao obrigatorias |
 | Anchor: funcao separada (fn_anchor_audit_chain) | Permitir service_role na fn_verify_audit_chain existente | Menor privilegio: cron precisa de pass/fail + payload, nao de broken_at_id diagnostico. Superficie menor para automatizacao. Separacao de preocupacoes: investigacao interativa (psicologa) vs health check (cron) |
 ---
 
-## Migrations (v1.4)
+## Migrations (v1.5)
 
 | Arquivo | Conteudo |
 |---------|----------|
@@ -407,8 +427,9 @@ RESET ROLE;
 | `20260909121100_seed_development.sql` | receipt_counters init + guia |
 | `20260909121200_patch_f1_f2_f3.sql` | **F1:** NULL-safe comparisons em 8 RPCs (IS DISTINCT FROM). **F2:** REVOKE EXECUTE FROM PUBLIC + GRANT explicito. **F3:** extensions.digest() e extensions.gen_random_bytes() em 3 funcoes SD |
 | `20260909121300_patch_verify_chain_split.sql` | Split: fn_verify_audit_chain (psychologist, diagnostico) + **fn_anchor_audit_chain** (service_role, ancora). REVOKE service_role de fn_verify. V17 |
+| `20260909121400_patch_f4_canonical_grants.sql` | **F4 fix:** REVOKE triplo (PUBLIC, anon, authenticated) + GRANT explicito em todas as 9 funcoes. Padrao canonico estabelecido |
 
-**12 migrations originais aplicadas no banco. Migration 13 (patch F1-F2-F3) pendente de aplicacao pelo orquestrador.
+**14 migrations aplicadas. Migration 15 (patch F4 + canonical grants) pendente.
 
 ---
 
@@ -421,3 +442,4 @@ RESET ROLE;
 | 1.2 | 2026-09-09 | N1: fn_block_delete_during_retention dividida em fn_block_delete_patient_retention (patients) e fn_block_delete_clinical_retention (tabelas clinicas via patient_id JOIN). Corrige referencia a coluna inexistente. V14 adicionada. |
 | 1.3 | 2026-09-09 | F1: NULL-safety em 8 RPCs/triggers (IS DISTINCT FROM). F2: REVOKE FROM PUBLIC + GRANT explicito em 8 funcoes. F3: schema-qualify pgcrypto (extensions.digest, extensions.gen_random_bytes) em 3 funcoes SD. V11 reescrita (teste funcional). V15-V16 adicionadas. Licao F2 registrada nas decisoes. |
 | 1.4 | 2026-09-09 | Anchor split: fn_verify_audit_chain (psychologist only) + fn_anchor_audit_chain (service_role only, retorno minimo). REVOKE service_role de fn_verify. V17 adicionada. 9 RPCs SD. |
+| 1.5 | 2026-09-09 | F4: REVOKE triplo canonico (PUBLIC + anon + authenticated) em todas as 9 funcoes. Corrige fn_anchor_audit_chain acessivel por anon. Licao F2 corrigida: duas fontes independentes de privilegio, nao uma. V11 reescrita com fn_anchor. V18 generica (has_function_privilege sweep). Regra adicionada ao CLAUDE.md. |
