@@ -1,6 +1,6 @@
 # Status: talitha-psicologia
-## Fase atual: Execucao -- Sprint 3 IMPLEMENTADA (aguardando Code Review + QA)
-## Ultimo agente: Next.js Agent (Sprint 3)
+## Fase atual: Execucao -- Sprint 3 QA APROVADA COM RESSALVA
+## Ultimo agente: QA Agent (Sprint 3)
 ## Branch: feature/sprint-3-patients
 
 ### Planejamento
@@ -125,5 +125,30 @@
 - EMAIL_FROM nao adicionado ao .env.example (permissao negada para ler/editar .env.example)
 - RESEND_API_KEY_APP nao adicionado ao .env.example (mesmo motivo)
 
+### QA Sprint 3: APROVADA COM RESSALVA -- docs/talitha-qa-sprint-3.md
+- 85 testes novos escritos e executados
+- 311 total (310 passando, 1 pulado informacional)
+- Zero regressao
+- **BLOCKER-1:** profile.ts grava hex sem prefixo \x em BYTEA (bug de CODIGO, nao de dado -- ninguem completou onboarding). Correcao: adicionar hexToBytea() em profile.ts linhas 42-48 e 89-95
+- Round-trip criptografia: Sprint 3 (patients.ts) OK. Sprint 2 (profile.ts) CORRUPTO
+- Hashes de consentimento correspondem aos textos (4/4)
+- Consentimento append-only confirmado (triggers bloqueiam UPDATE/DELETE)
+- Token: hash armazenado, atomicidade OK, expiracao OK, single-use OK
+- Email discreto (sem mencao clinica)
+- RLS: isolamento paciente-paciente validado com dados reais
+- Column-level grants: cpf_ciphertext/cpf_hmac bloqueados para authenticated
+
+### Pendencias acumuladas
+- **BLOCKER-1:** profile.ts precisa hexToBytea() -- OBRIGATORIO antes de qualquer onboarding
+- **F6 (WARNING):** Politica de senha no Supabase Auth dashboard NAO configurada
+- S1: middleware.ts deprecation
+- S4: ProfileForm exige CPF em toda edicao
+- S6: Sidebar mobile sem Vaul
+- S7: x-forwarded-for trust rule ausente
+- S10: Considerar wrapper withAuthenticatedUser
+- S11: eslint error em MfaSetup.tsx
+- EMAIL_FROM e RESEND_API_KEY_APP nao adicionados ao .env.example
+- W1: unused imports na Sprint 3 (4 arquivos)
+
 ### Proximo passo
-Sprint 3 implementada. Proximo: Code Review, depois QA.
+Corrigir BLOCKER-1 (profile.ts hexToBytea), depois avancar para Sprint 4 -- Agenda & Lembretes.
