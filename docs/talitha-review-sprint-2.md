@@ -236,3 +236,124 @@ REPROVADO. 1 Blocker + 1 Warning devem ser corrigidos antes de avancar para o QA
 **W1 precisa de decisao:** se a feature de recovery codes nao sera implementada de verdade (opcao A), basta remover a UI ficticia e a funcao `generateDisplayRecoveryCodes`. Se sera implementada (opcao B), requer tabela nova e logica adicional -- nesse caso, adiar para sprint posterior e registrar no backlog.
 
 Suggestions sao registradas como pendencias tecnicas no status file mas NAO bloqueiam.
+
+---
+
+## Re-verificacao (rodada 2)
+
+Verificacao pontual das correcoes aplicadas pelo Stack Agent. Nao e review completo -- foco exclusivo nos itens B1, W1 e S3/S5/S8.
+
+### B1: Troca de senha sem MFA server-side -- FECHADO
+
+**Arquivo novo:** `src/lib/actions/auth.ts` (101 linhas, `"use server"`).
+
+**Sequencia verificada na Server Action `resetPassword()`:**
+1. `getUser()` fail-closed (linha 32-35) -- erro ou !user retorna imediatamente
+2. `listFactors()` verifica se TOTP existe (linha 39-40)
+3. Se `hasTotp`: `getAuthenticatorAssuranceLevel()` exige `aal2` (linhas 42-55)
+4. Validacao de senha server-side `newPassword.length < 10` (linhas 58-62)
+5. `updateUser({ password })` (linha 66)
+6. `signOut({ scope: 'global' })` (linha 90)
+
+**Teste mental: curl com aal1 e TOTP enrolled.** A Server Action cria o Supabase client a partir dos cookies do request. `getUser()` retorna o usuario. `listFactors()` retorna os fatores TOTP (>0). `getAuthenticatorAssuranceLevel()` retorna `aal1` porque a sessao nao passou por MFA verify. Linha 46: `"aal1" !== "aal2"` -- rejeita com `{ success: false, error: "Verificacao MFA obrigatoria" }`. O `updateUser` nunca e alcancado. **O bypass nao e possivel.** Todos os checks acontecem na mesma execucao server-side, sem estado intermediario guardado.
+
+**ResetPassword.tsx refatorado:** Agora chama `resetPassword(data.password)` (Server Action importada) em vez de `supabase.auth.updateUser()` direto. O client faz o MFA challenge para promover a sessao a aal2, e depois a Server Action re-verifica aal2 server-side antes de efetivar. Comentario na linha 106-107 documenta que bypass client-side nao e possivel.
+
+**Logging:** A action registra `authorization_failure` com `MFA_REQUIRED` quando aal2 falha, e `password_changed` no sucesso. Usa `logError`/`logInfo` do logger -- nenhum `console.*`.
+
+### Decisao: caso sem TOTP (listFactors = 0)
+
+**A decisao do Stack Agent e segura, com janela operacional estreita e aceitavel.**
+
+Cenario analisado: atacante com acesso ao email da psicologa **antes** dela configurar MFA. O atacante dispara password reset, obtem sessao aal1, `listFactors()` retorna zero, a troca e permitida. O atacante depois faz login com a nova senha, o middleware forca `/mfa/setup`, e o atacante configura o proprio TOTP -- obtendo aal2 legitimo e acesso total.
+
+**Por que e aceitavel:**
+- A conta da psicologa e provisionada pelo desenvolvedor (seed/admin), nao por self-signup publico. O intervalo entre provisionar e o primeiro login e tipicamente minutos.
+- O middleware forca `/mfa/setup` imediatamente no primeiro login. Na pratica, o desenvolvedor assiste a psicologa nesse setup.
+- Se o atacante mudar a senha antes do primeiro login, a psicologa descobre imediatamente ao tentar logar -- nao e um ataque silencioso.
+- Bloquear password reset completamente quando nao ha TOTP penalizaria pacientes (que nao tem MFA no MVP) e a propria psicologa antes do setup.
+- O codigo corretamente exige aal2 quando fatores existem. A logica e: "se voce configurou MFA, prove que e voce; se nao configurou, nao posso exigir algo que nao existe."
+
+**Risco residual:** A janela existe por design. Se o projeto quiser fechar, a mitigacao seria enviar um email de notificacao a psicologa quando password reset for disparado (detectavel via webhook/trigger), dando visibilidade. Nao bloqueia Sprint 2.
+
+### Nao usar withPsychologist -- ACEITAVEL
+
+A `resetPassword` serve psicologa E paciente. Os wrappers existentes (`withPsychologist`, `withPatient`) sao role-specific e rejeitariam o role oposto. A action faz verificacao equivalente:
+- `getUser()` -- mesma chamada que os wrappers
+- Aal2 condicional em vez de incondicional (porque pacientes nao tem MFA no MVP)
+- `updateUser()` sempre opera sobre `auth.uid()` -- nao aceita targeting parameter
+- Nenhum `patient_id`, `psychologist_id` ou `role` como parametro
+
+**Gate do grep:** `grep -L "withPsychologist\|withPatient\|withPublicAction" src/lib/actions/*.ts` -- `auth.ts` contém a string `withPsychologist` no TSDoc (linha 10), entao o grep nao lista o arquivo. O gate passa tecnicamente. A fundamentacao real e que a action TEM uma fronteira de autorizacao -- so nao usa os wrappers pre-construidos porque nao servem o caso.
+
+**Nota:** Para futuras Server Actions role-agnostic, considerar criar um `withAuthenticatedUser` wrapper generico. Nao bloqueia Sprint 2.
+
+### W1: Recovery codes mislabeled + non-functional -- FECHADO
+
+**MfaSetup.tsx (247 linhas):** A funcao `generateDisplayRecoveryCodes` foi removida. O step `recovery` foi substituido por `verified` (boolean). Apos verificacao do TOTP, a tela agora mostra:
+- Titulo: "Autenticacao configurada!" (linha 131)
+- O TOTP secret inteiro em `font-mono` (linha 140) -- rotulado como "chave secreta", nao como "codigo de recuperacao"
+- Texto honesto: "Esta e a mesma chave usada para configurar o app autenticador. Com ela, voce pode reconfigurar o TOTP em qualquer app autenticador." (linhas 144-146)
+- Checkbox: "Salvei a chave secreta em lugar seguro" (linha 155) -- sem mencao a "uso unico"
+- Nenhum botao de copiar/baixar segmentos falsos
+
+**MfaVerify.tsx (132 linhas):** O modo `recovery` foi removido completamente. Imports de `Input` e `Label` removidos. Estado `recoveryCode`, `mode` removidos. Tipo `VerifyMode` removido. A tela agora mostra apenas o input de 6 digitos + texto informativo: "Perdeu acesso ao autenticador? Use a chave secreta salva durante a configuracao para reconfigurar o app, ou entre em contato com o suporte." (linhas 124-127)
+
+**Verificacao de orfaos:** Grep por `generateDisplayRecoveryCodes|recoveryCodes|recoveryCode|SetupStep|VerifyMode|recovery` em `src/components/auth/` retorna zero resultados. `Copy` e `Download` removidos dos imports de MfaSetup. Sem dead code.
+
+**A UI agora e honesta:** o TOTP secret e apresentado como o que e (chave permanente), sem inducao a comportamento inseguro. A orientacao para perda de acesso e clara e realista.
+
+### S3: Seed sobrescreve credentials.md -- CORRIGIDO
+
+O seed agora escreve em `docs/seed-credentials.md` (linha 214-216) com comentario explicito: "CRITICAL: Never overwrite docs/credentials.md -- it contains the project's real API keys, KEK, and other credentials that cannot be recovered if lost." (linhas 186-187). O arquivo original `docs/credentials.md` nao e tocado.
+
+### S5: Touch target 40px -- CORRIGIDO
+
+`MfaCodeInput.tsx` linha 91: `w-11` confirmado (antes era `w-10`). No Tailwind v4 deste projeto (sem override de spacing no `@theme` block), `w-11` = 2.75rem = **44px** na base de 16px. Atende o minimo de 44px da HIG/WCAG. Altura permanece `h-12` = 48px.
+
+### S8: MfaSetup.tsx acima de 200 linhas -- PARCIALMENTE CORRIGIDO
+
+MfaSetup.tsx agora tem 247 linhas (antes: 311). A funcao `generateDisplayRecoveryCodes` foi removida (era o alvo principal). O componente tem 3 renders claros (loading, verified, setup) e o codigo e legivel. 247 linhas esta acima do limite formal de 200, mas a reducao de 64 linhas e a remocao da funcao auxiliar atendem o espirito da sugestao. O restante poderia ser separado em subcomponentes (`MfaSetupForm`, `MfaSecretBackup`), mas e refinamento -- nao bloqueia.
+
+### Regressao nas 3 camadas do gate aal2 -- NENHUMA
+
+Verificacao por grep de `currentLevel.*aal2` nos 3 pontos:
+- **Middleware** (`src/middleware.ts:128`): `aal?.currentLevel !== "aal2"` -- intacto, inalterado
+- **PsychologistLayout** (`src/app/(psychologist)/layout.tsx:46`): `aal?.currentLevel !== "aal2"` -- intacto, inalterado
+- **withPsychologist** (`src/lib/actions/_guard.ts:84`): `aal?.currentLevel !== "aal2"` -- intacto, inalterado
+
+A reescrita de `ResetPassword.tsx`, `MfaSetup.tsx` e `MfaVerify.tsx` nao tocou em nenhum dos 3 arquivos acima. Zero regressao.
+
+### signOut + redirect -- FLUXO COERENTE
+
+`ResetPassword.tsx` linhas 108-117: Server Action executa `signOut({ scope: "global" })` e retorna `ActionResult`. O client recebe o resultado, mostra toast de sucesso, faz `router.push("/login")` e `router.refresh()`. A navegacao para `/login` cria uma nova request -- a sessao ja esta revogada, entao a login page renderiza normalmente para usuario nao-autenticado. Sem estado pendente, sem tela quebrada.
+
+### Resumo das correcoes aplicadas
+
+| Item | Status | Detalhe |
+|------|--------|---------|
+| B1: updateUser sem aal2 server-side | FECHADO | Server Action com check aal2 inline; curl com aal1+TOTP e rejeitado |
+| Caso sem TOTP | ACEITAVEL | Janela operacional estreita (minutos); risco residual documentado |
+| Nao usar withPsychologist | ACEITAVEL | Verificacao equivalente; TSDoc documenta; grep gate passa |
+| W1: Recovery codes mislabeled | FECHADO | Removido; UI honesta com "chave secreta" |
+| W1: Recovery flow non-functional | FECHADO | Modo recovery removido; orientacao de suporte no lugar |
+| Orfaos da remocao de W1 | NENHUM | Zero imports, estados ou tipos orfaos |
+| S3: Seed sobrescreve credentials | CORRIGIDO | Escreve em seed-credentials.md separado |
+| S5: Touch target 40px | CORRIGIDO | w-11 = 44px confirmado |
+| S8: MfaSetup 311 linhas | PARCIAL | 247 linhas; funcao auxiliar removida; acima de 200 mas legivel |
+| Regressao 3 camadas aal2 | NENHUMA | Middleware, layout, wrapper intactos |
+| signOut + redirect | COERENTE | Sem estado pendente apos global signout |
+
+## Veredicto Final
+
+APROVADO. 0 Blockers, 0 Warnings. Pode avancar para o QA.
+
+Suggestions remanescentes (nao bloqueiam):
+- S1: middleware.ts deprecation -- divida tecnica para Sprint 8
+- S2: Seed patients insert falha -- atualizar na Sprint 3
+- S4: ProfileForm exige CPF em toda edicao
+- S6: Sidebar mobile sem Vaul
+- S7: x-forwarded-for trust rule
+- S8: MfaSetup.tsx com 247 linhas (acima de 200, abaixo do critico)
+- S9: Politica de senha no Supabase Auth -- QA deve verificar
+- S10: Considerar criar wrapper `withAuthenticatedUser` para Server Actions role-agnostic

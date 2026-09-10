@@ -1,6 +1,6 @@
 # Status: talitha-psicologia
-## Fase atual: Execucao -- Sprint 2 correcoes B1+W1 aplicadas (aguardando re-review + QA)
-## Ultimo agente: Next.js Agent (Sprint 2 -- correcoes)
+## Fase atual: Execucao -- Sprint 2 QA REPROVADO (aguardando correcoes F5 + F6)
+## Ultimo agente: QA (Sprint 2)
 ## Branch: feature/sprint-2-auth
 
 ### Planejamento
@@ -20,25 +20,20 @@
 - QA: APROVADO (91 testes, 90 passando)
 - 4 patches aplicados
 
-### Sprint 2: Autenticacao & MFA -- CORRECOES B1+W1 APLICADAS
+### Sprint 2: Autenticacao & MFA -- CODE REVIEW APROVADO
 - Task 2.1: Login e callback de autenticacao -- CONCLUIDA
-- Task 2.2: MFA TOTP (setup e verificacao) -- CONCLUIDA (W1 corrigido)
-- Task 2.3: Recuperacao de senha -- CONCLUIDA (B1 corrigido)
+- Task 2.2: MFA TOTP (setup e verificacao) -- CONCLUIDA (W1 corrigido: UI honesta)
+- Task 2.3: Recuperacao de senha -- CONCLUIDA (B1 corrigido: Server Action com aal2)
 - Task 2.4: Middleware completo -- CONCLUIDA
 - Task 2.5: Layouts de area (5 route groups) -- CONCLUIDA
 - Task 2.6: Onboarding e perfil da psicologa -- CONCLUIDA
 - Code Review 1: REPROVADO (1B + 1W) -- docs/talitha-review-sprint-2.md
-- Correcoes aplicadas:
-  - B1 CORRIGIDO: updateUser movido para Server Action (src/lib/actions/auth.ts) com aal2 server-side
-  - W1 CORRIGIDO: Recovery codes ficticia removida; MfaVerify simplificado; mensagem honesta
-  - S3 CORRIGIDO: Seed agora escreve em docs/seed-credentials.md (nunca toca credentials.md)
-  - S5 CORRIGIDO: Touch target MFA input (w-10 -> w-11 = 44px)
-  - S8 CORRIGIDO: MfaSetup.tsx agora abaixo de 200 linhas
+- Correcoes aplicadas: B1, W1, S3, S5, S8
+- Code Review 2: APROVADO (0B, 0W) -- secao "Re-verificacao (rodada 2)" no mesmo arquivo
 - Build: PASSA
 - TypeScript: PASSA
-- Testes: 147 total (146 passando, 1 pulado) -- SEM REGRESSAO
-- Code Review 2: PENDENTE
-- QA: PENDENTE
+- Testes: 195 total (194 passando, 1 pulado) -- SEM REGRESSAO (48 novos)
+- QA: REPROVADO (1 Blocker F5 + 1 Warning F6) -- docs/talitha-qa-sprint-2.md
 
 ### ALERTA: docs/credentials.md foi sobrescrito pelo seed
 - O seed rodou ANTES da correcao S3 e sobrescreveu docs/credentials.md
@@ -46,14 +41,22 @@
 - O desenvolvedor precisa restaurar o conteudo original de docs/credentials.md
   a partir do .env.local ou de outra fonte
 
+### Blockers (devem ser corrigidos antes de re-QA)
+- **F5 (BLOCKER):** profiles RLS infinite recursion (42P17) -- `profiles_select_psychologist` faz subquery contra si propria. Impede TODA operacao autenticada em profiles e cascata para patients, sessions. Correcao: usar `auth.jwt()->'app_metadata'->>'role'` em vez de subquery
+- **F5b:** Onboarding Server Action tenta UPDATE em colunas cpf_* que nao estao no GRANT UPDATE de profiles para authenticated. Adicionar ao grant ou usar RPC SECURITY DEFINER
+- **F6 (WARNING):** Politica de senha no Supabase Auth dashboard NAO configurada. Servidor aceita senhas com 7 chars e senhas vazadas. Configurar no dashboard: min 10 chars + pwned check
+
 ### Pendencias tecnicas (nao bloqueantes)
 - S1: middleware.ts deprecation -- avaliar migracao para proxy.ts na Sprint 8
 - S2: Seed nao cria registro em patients (NOT NULL cpf) -- Sprint 3
 - S4: ProfileForm exige CPF em toda edicao -- schema com CPF opcional para futuro
 - S6: Sidebar mobile sem Vaul (usa overlay customizado) -- consistencia futura
 - S7: x-forwarded-for trust rule ausente -- Sprint 4+ (quando audit log usar IP)
-- S9: Politica de senha no Supabase Auth dashboard -- verificacao pelo QA
+- S8: MfaSetup.tsx com 247 linhas (acima de 200, parcialmente resolvido)
+- S10: Considerar wrapper withAuthenticatedUser para Server Actions role-agnostic
+- S11: eslint error em MfaSetup.tsx (setState em useEffect)
 - (Sprint 1) S1: ASAAS_BASE_URL ausente no .env.example
 
 ### Proximo passo
-Re-review pelo Code Reviewer para confirmar B1 + W1 corrigidos, depois QA.
+Data Architect / Stack Agent corrige F5 (RLS recursion) + F5b (column grant) + F6 (password policy dashboard).
+Apos correcoes, re-QA da Sprint 2 com os mesmos 195 testes (5 testes de F5 devem mudar de "recursao esperada" para "operacao bem-sucedida").
