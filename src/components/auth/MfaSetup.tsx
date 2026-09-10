@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react"
 import { useRouter } from "next/navigation"
-import { ShieldCheck, Loader2, Copy, Download } from "lucide-react"
+import { ShieldCheck, Loader2 } from "lucide-react"
 import { toast } from "sonner"
 
 import { createClient } from "@/lib/supabase/client"
@@ -18,11 +18,8 @@ import {
   CardDescription,
 } from "@/components/ui/card"
 
-type SetupStep = "qr" | "recovery"
-
 export function MfaSetup() {
   const router = useRouter()
-  const [step, setStep] = useState<SetupStep>("qr")
   const [factorId, setFactorId] = useState("")
   const [qrCode, setQrCode] = useState("")
   const [secret, setSecret] = useState("")
@@ -30,9 +27,9 @@ export function MfaSetup() {
   const [code, setCode] = useState("")
   const [isVerifying, setIsVerifying] = useState(false)
   const [hasError, setHasError] = useState(false)
-  const [recoveryCodes, setRecoveryCodes] = useState<string[]>([])
-  const [savedCodes, setSavedCodes] = useState(false)
   const [isEnrolling, setIsEnrolling] = useState(true)
+  const [verified, setVerified] = useState(false)
+  const [savedSecret, setSavedSecret] = useState(false)
 
   const enrollMfa = useCallback(async () => {
     setIsEnrolling(true)
@@ -75,7 +72,6 @@ export function MfaSetup() {
     try {
       const supabase = createClient()
 
-      // Challenge and verify
       const { data: challengeData, error: challengeError } =
         await supabase.auth.mfa.challenge({ factorId })
 
@@ -99,40 +95,13 @@ export function MfaSetup() {
         return
       }
 
-      // MFA verified — now show recovery codes
-      // Supabase MFA doesn't expose recovery codes on enroll, so we show the
-      // secret as the recovery mechanism. The user should save it securely.
-      // Note: Supabase provides recovery via the TOTP secret itself.
-      // We generate display-friendly backup values from the TOTP secret.
-      setRecoveryCodes(generateDisplayRecoveryCodes(secret))
-      setStep("recovery")
+      // MFA verified — show secret backup confirmation
+      setVerified(true)
     } catch {
       toast.error("Erro ao verificar. Tente novamente.")
     } finally {
       setIsVerifying(false)
     }
-  }
-
-  function handleCopyCodes() {
-    const text = recoveryCodes.join("\n")
-    navigator.clipboard.writeText(text)
-    toast.success("Codigos copiados!")
-  }
-
-  function handleDownloadCodes() {
-    const text = [
-      "Talitha Psicologia - Codigos de Recuperacao",
-      "Guarde em lugar seguro. Cada codigo so pode ser usado uma vez.",
-      "",
-      ...recoveryCodes,
-    ].join("\n")
-    const blob = new Blob([text], { type: "text/plain" })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement("a")
-    a.href = url
-    a.download = "talitha-codigos-recuperacao.txt"
-    a.click()
-    URL.revokeObjectURL(url)
   }
 
   function handleComplete() {
@@ -150,56 +119,46 @@ export function MfaSetup() {
     )
   }
 
-  if (step === "recovery") {
+  // After verification: show backup instructions
+  if (verified) {
     return (
       <Card className="shadow-lg">
         <CardHeader className="text-center">
-          <CardTitle className="text-xl">Codigos de recuperacao</CardTitle>
+          <div className="flex justify-center mb-2">
+            <ShieldCheck className="h-8 w-8 text-primary" />
+          </div>
+          <CardTitle className="text-xl">
+            Autenticacao configurada!
+          </CardTitle>
           <CardDescription>
-            Guarde estes codigos em lugar seguro. Cada codigo so pode ser usado
-            uma vez.
+            Guarde a chave secreta abaixo em lugar seguro. Se perder acesso ao
+            seu app autenticador, voce precisara dela para reconfigura-lo.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="rounded-md bg-muted p-4 font-mono text-sm leading-relaxed">
-            {recoveryCodes.map((code, i) => (
-              <div key={i}>{code}</div>
-            ))}
+          <div className="rounded-md bg-muted p-4 font-mono text-sm break-all text-center leading-relaxed">
+            {secret}
           </div>
 
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              className="flex-1"
-              onClick={handleCopyCodes}
-            >
-              <Copy className="mr-2 h-4 w-4" />
-              Copiar
-            </Button>
-            <Button
-              variant="outline"
-              className="flex-1"
-              onClick={handleDownloadCodes}
-            >
-              <Download className="mr-2 h-4 w-4" />
-              Baixar .txt
-            </Button>
-          </div>
+          <p className="text-xs text-muted-foreground text-center">
+            Esta e a mesma chave usada para configurar o app autenticador. Com
+            ela, voce pode reconfigurar o TOTP em qualquer app autenticador.
+          </p>
 
           <div className="flex items-start space-x-2">
             <Checkbox
-              id="saved-codes"
-              checked={savedCodes}
-              onCheckedChange={(checked) => setSavedCodes(checked === true)}
+              id="saved-secret"
+              checked={savedSecret}
+              onCheckedChange={(checked) => setSavedSecret(checked === true)}
             />
-            <Label htmlFor="saved-codes" className="text-sm leading-tight">
-              Salvei meus codigos em lugar seguro
+            <Label htmlFor="saved-secret" className="text-sm leading-tight">
+              Salvei a chave secreta em lugar seguro
             </Label>
           </div>
 
           <Button
             className="w-full"
-            disabled={!savedCodes}
+            disabled={!savedSecret}
             onClick={handleComplete}
           >
             Concluir
@@ -285,27 +244,4 @@ export function MfaSetup() {
       </CardContent>
     </Card>
   )
-}
-
-/**
- * Generate display-friendly recovery codes from the TOTP secret.
- * Since Supabase MFA doesn't expose recovery codes directly,
- * we format the TOTP secret into multiple segments that can serve
- * as backup reference for the user to reconfigure their authenticator.
- */
-function generateDisplayRecoveryCodes(secret: string): string[] {
-  // Format the TOTP secret into groups of 4 characters
-  // This allows the user to manually re-enter the TOTP secret
-  const codes: string[] = []
-  for (let i = 0; i < secret.length; i += 4) {
-    const segment = secret.slice(i, i + 4)
-    if (segment.length > 0) {
-      codes.push(segment)
-    }
-  }
-  // Pad to at least 8 entries for display consistency
-  while (codes.length < 8) {
-    codes.push("----")
-  }
-  return codes.slice(0, 8)
 }

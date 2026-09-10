@@ -88,7 +88,7 @@ export function MfaCodeInput({
             onKeyDown={(e) => handleKeyDown(index, e)}
             onPaste={handlePaste}
             disabled={disabled}
-            className={`h-12 w-10 text-center text-lg font-mono sm:h-14 sm:w-12 ${
+            className={`h-12 w-11 text-center text-lg font-mono sm:h-14 sm:w-12 ${
               hasError ? "border-destructive" : ""
             }`}
             aria-label={`Digito ${index + 1}`}

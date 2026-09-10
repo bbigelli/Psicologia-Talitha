@@ -181,11 +181,15 @@ async function main() {
     console.error("Patient record error:", patientRecordError.code)
   }
 
-  // 3. Write credentials to docs/credentials.md
-  const credentialsContent = `# Credenciais de Desenvolvimento
+  // 3. Write seed user credentials to a SEPARATE file.
+  //
+  // CRITICAL: Never overwrite docs/credentials.md — it contains the project's
+  // real API keys, KEK, and other credentials that cannot be recovered if lost.
+  // The KEK loss would make all clinical records permanently unreadable.
+  const seedCredentialsContent = `# Usuarios de Teste (Seed)
 
+> Gerado por scripts/seed-dev-users.ts
 > **NUNCA commitar este arquivo.** Esta no .gitignore.
-> Credenciais sao fictícias, exclusivas para ambiente de desenvolvimento.
 
 ## Psicologa
 
@@ -203,18 +207,15 @@ async function main() {
 - **User ID:** ${patientUserId}
 - **Role:** patient
 - **Data de nascimento:** 2000-01-15 (26 anos)
-
-## Supabase
-
-- **URL:** Ver .env.local (NEXT_PUBLIC_SUPABASE_URL)
-- **Anon Key:** Ver .env.local (NEXT_PUBLIC_SUPABASE_ANON_KEY)
-- **Service Role Key:** Ver .env.local (SUPABASE_SERVICE_ROLE_KEY)
 `
 
-  const credentialsPath = resolve(__dirname, "../docs/credentials.md")
-  writeFileSync(credentialsPath, credentialsContent)
+  const seedCredentialsPath = resolve(
+    __dirname,
+    "../docs/seed-credentials.md",
+  )
+  writeFileSync(seedCredentialsPath, seedCredentialsContent)
   // eslint-disable-next-line no-console
-  console.info("Credentials written to docs/credentials.md")
+  console.info("Seed credentials written to docs/seed-credentials.md")
 
   // eslint-disable-next-line no-console
   console.info("Seed complete!")

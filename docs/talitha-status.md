@@ -1,6 +1,6 @@
 # Status: talitha-psicologia
-## Fase atual: Execucao -- Sprint 2 CODE REVIEW REPROVADO (1 Blocker, 1 Warning)
-## Ultimo agente: Code Reviewer (Sprint 2)
+## Fase atual: Execucao -- Sprint 2 correcoes B1+W1 aplicadas (aguardando re-review + QA)
+## Ultimo agente: Next.js Agent (Sprint 2 -- correcoes)
 ## Branch: feature/sprint-2-auth
 
 ### Planejamento
@@ -20,30 +20,40 @@
 - QA: APROVADO (91 testes, 90 passando)
 - 4 patches aplicados
 
-### Sprint 2: Autenticacao & MFA -- CODE REVIEW REPROVADO
+### Sprint 2: Autenticacao & MFA -- CORRECOES B1+W1 APLICADAS
 - Task 2.1: Login e callback de autenticacao -- CONCLUIDA
-- Task 2.2: MFA TOTP (setup e verificacao) -- CONCLUIDA (Warning: recovery codes mislabeled/non-functional)
-- Task 2.3: Recuperacao de senha -- BLOCKER: troca de senha sem MFA server-side
+- Task 2.2: MFA TOTP (setup e verificacao) -- CONCLUIDA (W1 corrigido)
+- Task 2.3: Recuperacao de senha -- CONCLUIDA (B1 corrigido)
 - Task 2.4: Middleware completo -- CONCLUIDA
 - Task 2.5: Layouts de area (5 route groups) -- CONCLUIDA
 - Task 2.6: Onboarding e perfil da psicologa -- CONCLUIDA
-- Code Review: REPROVADO (docs/talitha-review-sprint-2.md)
-  - B1: updateUser callable at aal1 -- mover para Server Action com withPsychologist
-  - W1: Recovery codes mislabeled + non-functional -- remover feature ficticia ou implementar de verdade
-- QA: PENDENTE (aguarda correcao dos blockers/warnings)
+- Code Review 1: REPROVADO (1B + 1W) -- docs/talitha-review-sprint-2.md
+- Correcoes aplicadas:
+  - B1 CORRIGIDO: updateUser movido para Server Action (src/lib/actions/auth.ts) com aal2 server-side
+  - W1 CORRIGIDO: Recovery codes ficticia removida; MfaVerify simplificado; mensagem honesta
+  - S3 CORRIGIDO: Seed agora escreve em docs/seed-credentials.md (nunca toca credentials.md)
+  - S5 CORRIGIDO: Touch target MFA input (w-10 -> w-11 = 44px)
+  - S8 CORRIGIDO: MfaSetup.tsx agora abaixo de 200 linhas
+- Build: PASSA
+- TypeScript: PASSA
+- Testes: 147 total (146 passando, 1 pulado) -- SEM REGRESSAO
+- Code Review 2: PENDENTE
+- QA: PENDENTE
+
+### ALERTA: docs/credentials.md foi sobrescrito pelo seed
+- O seed rodou ANTES da correcao S3 e sobrescreveu docs/credentials.md
+- O arquivo agora contem apenas credenciais do seed, nao as chaves originais
+- O desenvolvedor precisa restaurar o conteudo original de docs/credentials.md
+  a partir do .env.local ou de outra fonte
 
 ### Pendencias tecnicas (nao bloqueantes)
-- S1: middleware.ts deprecation warning Next.js 16 -- avaliar na Sprint 8
-- S2: Seed patients insert falha por NOT NULL constraint em cpf_ciphertext -- atualizar na Sprint 3
-- S3: Seed sobrescreve credentials.md -- considerar merge ou arquivo separado
-- S4: ProfileForm exige CPF em toda edicao -- criar profileUpdateSchema com CPF opcional
-- S5: MfaCodeInput touch target 40px no mobile -- alterar w-10 para w-11
-- S6: Sidebar mobile nao usa Vaul -- integrar em sprint futura
-- S7: x-forwarded-for trust rule ausente no middleware -- implementar com audit logging
-- S8: MfaSetup.tsx com 311 linhas -- extrair util e subcomponentes
-- S9: Politica de senha no Supabase Auth -- QA deve verificar config do dashboard
+- S1: middleware.ts deprecation -- avaliar migracao para proxy.ts na Sprint 8
+- S2: Seed nao cria registro em patients (NOT NULL cpf) -- Sprint 3
+- S4: ProfileForm exige CPF em toda edicao -- schema com CPF opcional para futuro
+- S6: Sidebar mobile sem Vaul (usa overlay customizado) -- consistencia futura
+- S7: x-forwarded-for trust rule ausente -- Sprint 4+ (quando audit log usar IP)
+- S9: Politica de senha no Supabase Auth dashboard -- verificacao pelo QA
 - (Sprint 1) S1: ASAAS_BASE_URL ausente no .env.example
-- (Sprint 1) S3: safeErrorCode() sem uso em producao
 
 ### Proximo passo
-Stack agent corrige B1 e W1 conforme report. Code Review roda novamente.
+Re-review pelo Code Reviewer para confirmar B1 + W1 corrigidos, depois QA.

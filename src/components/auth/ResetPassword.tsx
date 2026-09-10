@@ -9,6 +9,7 @@ import { toast } from "sonner"
 
 import { resetPasswordSchema, type ResetPasswordInput } from "@/schemas/auth"
 import { createClient } from "@/lib/supabase/client"
+import { resetPassword } from "@/lib/actions/auth"
 import { MfaCodeInput } from "@/components/auth/MfaCodeInput"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -88,7 +89,9 @@ export function ResetPassword({ hasMfa }: ResetPasswordProps) {
         return
       }
 
-      // MFA verified — proceed to password reset
+      // MFA verified — session promoted to aal2.
+      // Now proceed to password step where the Server Action
+      // will re-verify aal2 server-side before changing the password.
       setStep("password")
     } catch {
       toast.error("Erro ao verificar. Tente novamente.")
@@ -100,22 +103,16 @@ export function ResetPassword({ hasMfa }: ResetPasswordProps) {
   async function onSubmitPassword(data: ResetPasswordInput) {
     setIsLoading(true)
     try {
-      const supabase = createClient()
+      // Password update via Server Action — enforces aal2 server-side
+      // when TOTP factors exist. Client-side MFA bypass is not possible.
+      const result = await resetPassword(data.password)
 
-      const { error } = await supabase.auth.updateUser({
-        password: data.password,
-      })
-
-      if (error) {
-        toast.error("Nao foi possivel alterar a senha. Tente novamente.")
+      if (!result.success) {
+        toast.error(result.error)
         return
       }
 
       toast.success("Senha alterada com sucesso!")
-
-      // Sign out to revoke other sessions — user logs in fresh
-      await supabase.auth.signOut({ scope: "global" })
-
       router.push("/login")
       router.refresh()
     } catch {

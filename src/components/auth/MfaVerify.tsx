@@ -8,8 +8,6 @@ import { toast } from "sonner"
 import { createClient } from "@/lib/supabase/client"
 import { MfaCodeInput } from "@/components/auth/MfaCodeInput"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import {
   Card,
   CardContent,
@@ -18,19 +16,22 @@ import {
   CardDescription,
 } from "@/components/ui/card"
 
-type VerifyMode = "totp" | "recovery"
-
+/**
+ * MFA verification — 6-digit TOTP code only.
+ *
+ * Recovery codes are NOT implemented in this version.
+ * If the psychologist loses access to their authenticator, they should
+ * reconfigure TOTP using the secret key saved during setup, or
+ * contact support for manual identity verification and factor reset.
+ */
 export function MfaVerify() {
   const router = useRouter()
-  const [mode, setMode] = useState<VerifyMode>("totp")
   const [code, setCode] = useState("")
-  const [recoveryCode, setRecoveryCode] = useState("")
   const [isVerifying, setIsVerifying] = useState(false)
   const [hasError, setHasError] = useState(false)
 
   async function handleVerify() {
-    const codeToUse = mode === "totp" ? code : recoveryCode.trim()
-    if (!codeToUse) return
+    if (code.length !== 6) return
 
     setIsVerifying(true)
     setHasError(false)
@@ -63,14 +64,12 @@ export function MfaVerify() {
       const { error: verifyError } = await supabase.auth.mfa.verify({
         factorId: totpFactor.id,
         challengeId: challengeData.id,
-        code: codeToUse,
+        code,
       })
 
       if (verifyError) {
         setHasError(true)
-        if (mode === "totp") {
-          setCode("")
-        }
+        setCode("")
         toast.error("Codigo incorreto. Tente novamente.")
         setIsVerifying(false)
         return
@@ -93,99 +92,40 @@ export function MfaVerify() {
         </div>
         <CardTitle className="text-xl">Verificacao</CardTitle>
         <CardDescription>
-          {mode === "totp"
-            ? "Digite o codigo do seu app autenticador"
-            : "Digite um codigo de recuperacao"}
+          Digite o codigo do seu app autenticador
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {mode === "totp" ? (
-          <>
-            <MfaCodeInput
-              value={code}
-              onChange={setCode}
-              disabled={isVerifying}
-              hasError={hasError}
-            />
-            {hasError && (
-              <p className="text-sm text-destructive text-center">
-                Codigo incorreto. Tente novamente.
-              </p>
-            )}
-            <Button
-              className="w-full"
-              disabled={code.length !== 6 || isVerifying}
-              onClick={handleVerify}
-            >
-              {isVerifying ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Verificando...
-                </>
-              ) : (
-                "Verificar"
-              )}
-            </Button>
-            <div className="text-center">
-              <button
-                type="button"
-                className="text-sm text-primary hover:underline"
-                onClick={() => {
-                  setMode("recovery")
-                  setHasError(false)
-                }}
-              >
-                Usar codigo de recuperacao
-              </button>
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="space-y-2">
-              <Label htmlFor="recovery-code">Codigo de recuperacao</Label>
-              <Input
-                id="recovery-code"
-                type="text"
-                value={recoveryCode}
-                onChange={(e) => setRecoveryCode(e.target.value)}
-                disabled={isVerifying}
-                placeholder="Digite o codigo"
-                className={hasError ? "border-destructive" : ""}
-              />
-              {hasError && (
-                <p className="text-sm text-destructive">
-                  Codigo invalido. Tente outro codigo.
-                </p>
-              )}
-            </div>
-            <Button
-              className="w-full"
-              disabled={!recoveryCode.trim() || isVerifying}
-              onClick={handleVerify}
-            >
-              {isVerifying ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Verificando...
-                </>
-              ) : (
-                "Verificar"
-              )}
-            </Button>
-            <div className="text-center">
-              <button
-                type="button"
-                className="text-sm text-primary hover:underline"
-                onClick={() => {
-                  setMode("totp")
-                  setHasError(false)
-                }}
-              >
-                Usar codigo do app
-              </button>
-            </div>
-          </>
+        <MfaCodeInput
+          value={code}
+          onChange={setCode}
+          disabled={isVerifying}
+          hasError={hasError}
+        />
+        {hasError && (
+          <p className="text-sm text-destructive text-center">
+            Codigo incorreto. Tente novamente.
+          </p>
         )}
+        <Button
+          className="w-full"
+          disabled={code.length !== 6 || isVerifying}
+          onClick={handleVerify}
+        >
+          {isVerifying ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Verificando...
+            </>
+          ) : (
+            "Verificar"
+          )}
+        </Button>
+        <p className="text-xs text-muted-foreground text-center">
+          Perdeu acesso ao autenticador? Use a chave secreta salva durante a
+          configuracao para reconfigurar o app, ou entre em contato com o
+          suporte.
+        </p>
       </CardContent>
     </Card>
   )

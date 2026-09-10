@@ -7,9 +7,13 @@ import type { ActionResult } from "@/types/actions"
 /**
  * Server-side password reset with aal2 enforcement.
  *
- * If the user has TOTP factors, the session MUST be aal2 before the
- * password can be changed. This prevents client-side MFA bypass.
+ * This action does NOT use withPsychologist/withPatient because it
+ * serves both roles. It performs its own auth verification:
+ * 1. getUser() — fail-closed
+ * 2. If TOTP factors exist → require aal2 (server-side enforcement)
+ * 3. If no TOTP factors → allow (patient without MFA in MVP)
  *
+ * The aal2 check is the authorization boundary — not client-side UI state.
  * After password change, ALL sessions are revoked (global signout).
  *
  * @see architecture.md §7.3
