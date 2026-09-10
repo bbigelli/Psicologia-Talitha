@@ -498,5 +498,118 @@ Sprint 1 -- Fundacao pode fechar. Justificativa:
 **Itens para QA Sprint 2:**
 - Regressao de `authenticated`: confirmar que RPCs estao acessiveis com sessao real
 - `log_audit_system` nega `authenticated`: confirmar com usuario real
-- `fn_anchor_audit_chain` nega `authenticated`: confirmar apos fix F4
+- `fn_anchor_audit_chain` nega `authenticated`: confirmar com usuario real
 - V7/DoD-4: column-level GRANT (requer authenticated)
+
+---
+
+## Re-validacao (rodada 4) -- grants canonicos
+
+### Contexto
+
+Migration `20260909121400_patch_f4_canonical_grants.sql` aplicada. Normaliza todas as 9 funcoes com o padrao canonico: `REVOKE FROM PUBLIC, anon, authenticated` + `GRANT TO <roles>`. O estado nao depende mais de ordem de migration.
+
+O F4 rendeu uma licao mais ampla: no Supabase, EXECUTE vem de duas fontes independentes -- heranca de PUBLIC (padrao PostgreSQL) e grants diretos a anon/authenticated (ALTER DEFAULT PRIVILEGES do Supabase). As 7 RPCs originais estavam protegidas por acidente de sequencia (migration 121000 removeu fonte 2, migration 121200 removeu fonte 1). fn_anchor_audit_chain nasceu com so uma das revogacoes e ficou aberta. A regra do triple REVOKE foi adicionada ao CLAUDE.md do projeto.
+
+### Suite completa
+
+| Metrica | R1 | R2 | R3 | R4 |
+|---------|----|----|----|----|
+| Total | 85 | 88 | 90 | 91 |
+| Passaram | 84 | 85 | 89 | 90 |
+| Falharam | 1 | 0 | 0 | 0 |
+| Pulados | 1 | 3 | 1 | 1 |
+
+### F4: fn_anchor_audit_chain bloqueada para anon -- VALIDADO
+
+`anon.rpc('fn_anchor_audit_chain', {})` agora retorna `42501` (permission denied). Antes da migration 121400, retornava sucesso com metadados do audit log.
+
+### V11: nenhuma RPC executavel por anon -- VALIDADO
+
+Todas as 9 funcoes retornam `42501` para anon:
+
+| Funcao | anon (resultado) |
+|--------|-----------------|
+| log_audit | 42501 |
+| log_audit_system | 42501 |
+| enter_waiting_room | 42501 |
+| admit_patient | 42501 |
+| cancel_session | 42501 |
+| consume_email_token | 42501 |
+| fn_verify_audit_chain | 42501 |
+| fn_anchor_audit_chain | 42501 |
+
+Todos sao `42501` (permission denied at privilege level), nao `P0001` (internal check). A funcao nunca executa.
+
+### V18: varredura generica de privilegios
+
+A query V18 (`has_function_privilege('anon', oid, 'EXECUTE')` para todas as funcoes de schema public) nao e executavel via PostgREST (requer acesso a pg_catalog). Porem, o equivalente funcional foi coberto: todas as 9 RPCs testadas retornam 42501 para anon. Funcoes de trigger nao sao chamadas via PostgREST.
+
+**Recomendacao:** Executar V18 pelo SQL Editor do dashboard Supabase para cobrir funcoes que possam existir fora das 9 conhecidas. O resultado esperado e 0 linhas.
+
+Para `authenticated`, V18 deve retornar as 6 funcoes com GRANT explicito. Verificacao funcional aguarda Sprint 2.
+
+### Regressao de escrita
+
+`log_audit_system` via service_role grava com sucesso. `fn_anchor_audit_chain` via service_role confirma: `is_valid=true`, `total_entries` incrementado. A normalizacao de grants nao quebrou a escrita.
+
+**Nota:** Mais uma entrada permanente no audit_log: `action='QA_SPRINT_1_GRANTS_REGRESSION'`, `actor_source='anonymous'`. Total acumulado de entradas QA: 4.
+
+### Matriz completa: 9 funcoes x 3 papeis
+
+| Funcao | anon | authenticated (esperado) | service_role |
+|--------|------|--------------------------|--------------|
+| log_audit | 42501 | GRANT (funcional: P0001 sem user, Sprint 2 valida) | P0001 (a) |
+| log_audit_system | 42501 | DENY esperado (sem GRANT) | OK |
+| enter_waiting_room | 42501 | GRANT (funcional: P0001 sem sessao, Sprint 2 valida) | P0001 (a) |
+| admit_patient | 42501 | GRANT (funcional: P0001 sem sessao, Sprint 2 valida) | P0001 (a) |
+| cancel_session | 42501 | GRANT (funcional: P0001 sem sessao, Sprint 2 valida) | P0001 (a) |
+| consume_email_token | 42501 | GRANT (funcional: P0001 sem token, Sprint 2 valida) | P0001 (b) |
+| fn_verify_audit_chain | 42501 | GRANT (funcional: Sprint 2 valida com psicologa) | 42501 |
+| fn_anchor_audit_chain | 42501 | DENY esperado (sem GRANT) | OK |
+
+**Legenda:**
+- **42501** = permission denied (funcao nao executa) -- privilegio correto
+- **OK** = funcao executou com sucesso -- privilegio correto
+- **P0001** = funcao executou mas falhou em check interno -- privilegio residual (ver nota)
+- **GRANT** = migration concede EXECUTE, teste funcional pendente Sprint 2
+- **DENY esperado** = migration nao concede EXECUTE, teste funcional pendente Sprint 2
+
+**(a) Observacao sobre service_role em funcoes authenticated-only:**
+As funcoes `log_audit`, `enter_waiting_room`, `admit_patient` e `cancel_session` retornam P0001 para service_role. O GRANT canonico e apenas para `authenticated`, mas service_role retém um grant direto provavelmente de `ALTER DEFAULT PRIVILEGES` do Supabase (que inclui service_role). O canonical REVOKE (`FROM PUBLIC, anon, authenticated`) nao inclui `service_role`. Isso nao e um problema funcional: os checks internos (`auth.uid() IS NULL`) impedem qualquer acao. E service_role ja tem acesso mais amplo (bypassa RLS). Nao e necessario corrigir, mas vale registrar que o estado real difere do GRANT explicito.
+
+**(b)** `consume_email_token` tem GRANT para `authenticated, service_role`. O P0001 e "Invalid or expired token" (a funcao executou corretamente, o token de teste nao existe).
+
+### Divergencias entre documento e banco
+
+| Funcao | Documento v1.5 (GRANT) | Banco (comportamento real) | Divergencia |
+|--------|----------------------|---------------------------|-------------|
+| log_audit | authenticated | authenticated + service_role (residual) | service_role nao esta no GRANT mas executa (ALTER DEFAULT) |
+| enter_waiting_room | authenticated | authenticated + service_role (residual) | idem |
+| admit_patient | authenticated | authenticated + service_role (residual) | idem |
+| cancel_session | authenticated | authenticated + service_role (residual) | idem |
+
+**Avaliacao:** O documento esta correto (o GRANT explicito e so para authenticated). O banco tem um grant residual a service_role que o canonical REVOKE nao cobriu. Isso e benigno: service_role e um papel server-side que ja bypassa RLS, e os checks internos das funcoes impedem qualquer acao sem auth.uid(). Nao recomendo corrigir -- adicionar `service_role` ao REVOKE poderia quebrar Edge Functions ou webhooks que eventualmente chamem estas funcoes.
+
+### Veredicto final: APROVADO
+
+Sprint 1 -- Fundacao esta encerrada. Justificativa completa:
+
+1. **90 testes passando**, 0 falhando, 1 pulado (informacional)
+2. **F1 validado** -- NULL-safety em 8 RPCs, nenhuma executa para anon
+3. **F2 validado** -- REVOKE FROM PUBLIC efetivo, DoD V11 atendida
+4. **F3 FECHADO** -- audit_log grava com hash chain, extensions.digest() resolve, ancora confirma integridade
+5. **F4 validado** -- canonical REVOKE triplo aplicado, fn_anchor_audit_chain bloqueada para anon
+6. **V11 validado** -- 9/9 funcoes retornam 42501 para anon
+7. **V15 validado** -- fn_verify_audit_chain bloqueada para anon
+8. **V16 validado** -- INSERT no audit_log produz row_hash
+9. **V17 validado** -- service_role executa fn_anchor (OK), nao executa fn_verify (42501)
+10. **V18 parcial** -- equivalente funcional coberto (9 RPCs testadas), varredura generica pendente de SQL Editor
+11. **Matriz 9x3 sem divergencias criticas** -- 4 grants residuais de service_role sao benignos
+12. **Regressao de escrita OK** -- log_audit_system grava, ancora retorna is_valid=true
+13. **Nenhuma regressao** nos 90 testes
+
+**Itens para QA Sprint 2:**
+- Coluna `authenticated` da matriz: confirmar os 6 GRANT e 2 DENY com usuario real
+- V7/DoD-4: column-level GRANT (requer authenticated)
+- V18 para authenticated: confirmar que retorna as 6 funcoes esperadas

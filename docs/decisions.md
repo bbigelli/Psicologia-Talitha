@@ -92,3 +92,17 @@ Registro de decisões de produto, arquitetura e técnicas. Ver `~/.claude/CLAUDE
 **Efeito material — não é só remoção:** a 09/2024 desloca a decisão para a avaliação técnica da própria psicóloga, que **responde diretamente pelos critérios usados**, e exige que a **avaliação de viabilidade do atendimento remoto seja registrada no prontuário, com data**. Isso é um requisito funcional novo (Emenda E6) que substitui o e-Psi como o item de conformidade CFP do software — e é mais relevante, porque é o documento que protege a psicóloga perante o CRP.
 **Outros efeitos:** o termo de consentimento passa a exigir cláusulas de formato online, política de faltas e queda de conexão (E7); as vedações automáticas de atendimento em crise, emergência, violência e desastre foram revogadas, então o app **não** deve bloquear esses casos por regra rígida (E8).
 **Escopo:** Prontuário, consentimento, onboarding da psicóloga, e qualquer validação de elegibilidade de caso.
+
+### [2026-09-09] service_role mantém grant residual em funções authenticated-only
+**Contexto:** Após a normalização canônica dos grants (migration 15), o QA mapeou as 9 funções × 3 papéis e encontrou 4 células divergentes: `service_role` retém `EXECUTE` em `log_audit`, `enter_waiting_room`, `admit_patient` e `cancel_session`, que deveriam ser exclusivas de `authenticated`.
+**Causa:** o `ALTER DEFAULT PRIVILEGES` do Supabase inclui `service_role` entre os papéis que recebem grant direto, e a normalização revogou de `PUBLIC`, `anon` e `authenticated` — não de `service_role`.
+**Decisão:** não corrigir. As quatro funções têm gate interno de `auth.uid() IS NULL`, e `service_role` não tem `auth.uid()` — então a chamada falha com `P0001` antes de qualquer efeito. O privilégio existe, a ação não.
+**Risco aceito:** defense-in-depth de uma camada em vez de duas nessas quatro funções. Aceitável porque `service_role` só é alcançável do servidor (garantido em código por `import 'server-only'` em `admin.ts`), e o gate interno é o mesmo mecanismo que protege contra `anon`.
+**Revisar se:** alguma dessas funções perder o gate de `auth.uid()`, ou se `service_role` passar a ser usada em contexto onde `auth.uid()` esteja populado.
+**Escopo:** Grants de função.
+
+### [2026-09-09] Verificação V18 pendente de execução no SQL Editor
+**Contexto:** A V18 varre o catálogo inteiro via `has_function_privilege` para listar qualquer função executável por `anon`. O QA validou as 9 funções conhecidas funcionalmente (todas `42501`), mas a varredura genérica exige `SET ROLE`, que o PostgREST não permite.
+**Decisão:** V18 fica como verificação manual no SQL Editor do dashboard, a rodar antes de cada deploy, até que o projeto tenha um cliente Postgres direto nos testes.
+**Pendência técnica:** adicionar `pg` como devDependency habilitaria `SET ROLE` nos testes de integração e automatizaria a V18 — vale avaliar na Sprint 2, quando o QA precisar testar RLS por papel autenticado.
+**Escopo:** Verificações de segurança do banco.

@@ -203,6 +203,7 @@ describe.skipIf(!canRun)(
         params: { p_token_hash: "fake_hash", p_expected_purpose: "confirm" },
       },
       { name: "fn_verify_audit_chain", params: {} },
+      { name: "fn_anchor_audit_chain", params: {} },
       {
         name: "log_audit_system",
         params: {
@@ -230,22 +231,13 @@ describe.skipIf(!canRun)(
       expect(error!.message).toContain("permission denied")
     })
 
-    // FINDING F4: fn_anchor_audit_chain accessible by anon
-    //
-    // The migration 121300 has REVOKE FROM PUBLIC + GRANT TO service_role,
-    // but Supabase ALTER DEFAULT PRIVILEGES creates direct grants to
-    // anon and authenticated. REVOKE FROM PUBLIC only removes PUBLIC
-    // inheritance — the direct grants to anon/authenticated persist.
-    //
-    // Fix: add REVOKE FROM anon, authenticated before GRANT TO service_role.
-    // Same root cause as F2 but for a new function.
-    it("FINDING F4: fn_anchor_audit_chain is accessible by anon (missing REVOKE from anon)", async () => {
-      const { data, error } = await anon.rpc("fn_anchor_audit_chain", {})
+    // F4 FIXED: fn_anchor_audit_chain now blocked for anon
+    // (migration 121400 applied canonical REVOKE FROM PUBLIC, anon, authenticated)
+    it("F4 fixed: fn_anchor_audit_chain denied for anon with 42501", async () => {
+      const { error } = await anon.rpc("fn_anchor_audit_chain", {})
 
-      // BUG: should get 42501 but the function executes
-      // This documents the current (broken) behavior
-      expect(error).toBeNull()
-      expect(data).toBeTruthy()
+      expect(error).toBeTruthy()
+      expect(error!.code).toBe("42501")
     })
 
     // Tables with NO policies — doubly locked for anon
