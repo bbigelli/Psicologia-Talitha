@@ -1,7 +1,7 @@
 # Status: talitha-psicologia
-## Fase atual: Execucao -- Sprint 3 Code Review APROVADO (rodada 2)
-## Ultimo agente: Code Reviewer (Sprint 3, rodada 2)
-## Branch: feature/sprint-3-patients
+## Fase atual: Execucao -- Sprint 4 CODE REVIEW APROVADO, pronta para Sprint 5
+## Ultimo agente: Code Reviewer (Sprint 4, rodada 2)
+## Branch: feature/sprint-4-schedule
 
 ### Planejamento
 - Decisoes de stack e escopo: OK (docs/decisions.md)
@@ -30,66 +30,43 @@
 - Code Review 1: REPROVADO (1B + 1W) -- corrigidos
 - Code Review 2: APROVADO
 - QA 1: REPROVADO (F5 profiles recursion + F6 password policy)
-- F5 corrigido: migration 121500 (fn_is_psychologist SD)
-- F5b corrigido: GRANT UPDATE cipher columns
 - QA 2: APROVADO COM RESSALVA -- docs/talitha-qa-sprint-2.md
-- Build: PASSA
-- TypeScript: PASSA
-- Testes: 217 total (216 passando, 1 pulado) -- SEM REGRESSAO
-- 5 patches aplicados (121200-121500)
-
-### ALERTA: docs/credentials.md foi sobrescrito pelo seed
-- O seed rodou ANTES da correcao S3 e sobrescreveu docs/credentials.md
-- O arquivo agora contem apenas credenciais do seed, nao as chaves originais
-- O desenvolvedor precisa restaurar o conteudo original de docs/credentials.md
-  a partir do .env.local ou de outra fonte
-
-### Pendencias (nao bloqueiam Sprint 3)
-- **F6 (WARNING):** Politica de senha no Supabase Auth dashboard NAO configurada. Servidor aceita senhas fracas. Acao do desenvolvedor: configurar no dashboard
-- S1: middleware.ts deprecation -- avaliar migracao para proxy.ts na Sprint 8
-- S2: Seed nao cria registro em patients (NOT NULL cpf) -- Sprint 3
-- S4: ProfileForm exige CPF em toda edicao -- schema com CPF opcional para futuro
-- S6: Sidebar mobile sem Vaul (usa overlay customizado) -- consistencia futura
-- S7: x-forwarded-for trust rule ausente -- Sprint 4+
-- S10: Considerar wrapper withAuthenticatedUser para Server Actions role-agnostic
-- S11: eslint error em MfaSetup.tsx (setState em useEffect)
-- (Sprint 1) S1: ASAAS_BASE_URL ausente no .env.example
 
 ### Sprint 3: Pacientes & Consentimento -- APROVADA
 - Task 3.1-3.6: CONCLUIDAS
-- Code Review 1: REPROVADO (0B 2W 5S) -- W1 (version check), W2 (zod parse)
-- Stack Agent: W1 e W2 corrigidos, S1/S2/S5 aplicadas, S4 recusada com motivo
-- Code Review 2 (rodada 2): APROVADO -- W1 e W2 fechados, W3 (constante duplicada) registrado como pendencia obrigatoria
-- QA: APROVADA COM RESSALVA -- docs/talitha-qa-sprint-3.md (BLOCKER-1 do QA ja corrigido)
-- Build: PASSA
-- TypeScript: PASSA
-- Testes: 324 total (323 passando, 1 pulado) -- SEM REGRESSAO
+- Code Review 1: REPROVADO (0B 2W 5S)
+- Code Review 2: APROVADO
+- QA: APROVADA COM RESSALVA -- docs/talitha-qa-sprint-3.md
 
-### Code Review Sprint 3 -- resultado final (docs/talitha-review-sprint-3.md)
-- W1 (version check): FECHADO. 3 locais verificam consent_version. Re-aceite sem loop. 7 testes
-- W2 (zod parse): FECHADO. 3 actions parseiam. revokeConsentSchema criado
-- **W3 (NOVO): CURRENT_CONSENT_VERSION duplicada em 3 locais sem mecanismo de sincronizacao.** Correcao: extrair para src/lib/consent-version.ts (modulo sem dependencias). OBRIGATORIO no inicio da Sprint 4
-- S1 (scroll a11y): FECHADO
-- S2 (audit label): FECHADO
-- S3 (allowlist doc): pendencia para Architect
-- S4 (date helpers): recusa aceitavel
-- S5 (envelopeToBytea tipo): FECHADO -- assertion justificada
-- Proposito opcional (communication): decisao aceitavel para Sprint 3. Nota: Sprint 4 deve verificar hash do texto ao enviar lembretes
-- Regressao: zero (324 testes, 323 passando)
+### Sprint 4: Agenda & Lembretes -- APROVADA
+- Task 4.1-4.7: CONCLUIDAS
+- QA: APROVADO -- docs/talitha-qa-sprint-4.md (408 testes passando)
+- Code Review 1: REPROVADO (0B 5W 6S)
+- Stack Agent: W1-W5 corrigidos, S5-S6 aplicadas, S1-S2 recusadas, S3-S4 pendencias
+- **Code Review 2 (rodada 2): APROVADO** -- docs/talitha-review-sprint-4.md
+  - W1 (throw apos side effect): FECHADO
+  - W2 (desktop day-view): FECHADO
+  - W3 (at-most-once -> retry): FECHADO (riscos de concorrencia residuais registrados para Sprint 8)
+  - W4 (token INSERT): FECHADO
+  - W5 (allowlist): FECHADO (reportado ao Architect)
 
 ### Pendencias tecnicas acumuladas
 - **F6 (WARNING):** Politica de senha no Supabase Auth dashboard NAO configurada
-- **W3 (OBRIGATORIO Sprint 4):** Extrair CURRENT_CONSENT_VERSION para modulo proprio sem dependencias
 - S1 (Sprint 2): middleware.ts deprecation
 - S4 (Sprint 2): ProfileForm exige CPF em toda edicao
 - S6 (Sprint 2): Sidebar mobile sem Vaul
 - S7 (Sprint 2): x-forwarded-for trust rule ausente
 - S10 (Sprint 2): Considerar wrapper withAuthenticatedUser
 - S11 (Sprint 2): eslint error em MfaSetup.tsx
-- EMAIL_FROM e RESEND_API_KEY_APP nao adicionados ao .env.example
+- .env.example: pode necessitar CRON_SECRET, RESEND_API_KEY_CRON, SITE_URL
 - W1 (QA Sprint 3): unused imports na Sprint 3
 - S3 (CR Sprint 3): documentar consumo de convite na allowlist do Architect
-- Nota Sprint 4: verificar hash do texto de comunicacao ao enviar lembretes
+- W5 (CR Sprint 4): Architect deve atualizar allowlist em architecture.md secao 6.2
+- S1 (CR Sprint 4): Divergencia status pre-check app vs RPC (documentada como intencional)
+- S3 (CR Sprint 4): Edge Function sem batch limit
+- S4 (CR Sprint 4): timingSafeEqual manual vs nativo do Deno
+- Edge Function retry: riscos residuais de pending orfao e duplicacao sob concorrencia (hardening Sprint 8)
+- Deploy da Edge Function send-reminders PENDENTE
 
 ### Proximo passo
-Sprint 3 aprovada. Avancar para Sprint 4 -- Agenda & Lembretes. Primeira task da Sprint 4: extrair CURRENT_CONSENT_VERSION para modulo proprio (W3).
+Avancar para Sprint 5 -- Financeiro & Asaas.

@@ -106,3 +106,35 @@ Registro de decisões de produto, arquitetura e técnicas. Ver `~/.claude/CLAUDE
 **Decisão:** V18 fica como verificação manual no SQL Editor do dashboard, a rodar antes de cada deploy, até que o projeto tenha um cliente Postgres direto nos testes.
 **Pendência técnica:** adicionar `pg` como devDependency habilitaria `SET ROLE` nos testes de integração e automatizaria a V18 — vale avaliar na Sprint 2, quando o QA precisar testar RLS por papel autenticado.
 **Escopo:** Verificações de segurança do banco.
+
+### [2026-09-10] ~~Deploy de Edge Functions pendente~~ — RESOLVIDO no mesmo dia
+**Contexto:** A Sprint 4 criou a primeira Edge Function (`send-reminders`). Deploy e `supabase secrets set` exigem um **Personal Access Token de conta** do Supabase (`~/.supabase/access-token`), que não existe nesta máquina. As chaves de projeto já fornecidas (anon, service_role, database password) não servem para isso.
+**Decisão:** seguir o desenvolvimento com as Edge Functions **escritas e versionadas, mas não deployadas**. A lógica de decisão é extraída em função pura e testada isoladamente, para que a ausência de deploy não deixe o comportamento sem cobertura.
+**Consequência aceita:** nenhum fluxo que dependa de Edge Function é testável ponta a ponta até o deploy — lembretes (Sprint 4), **webhook do Asaas (Sprint 5)** e emissão de token do LiveKit (Sprint 6). O webhook do Asaas é o mais crítico: é ele que concilia pagamento com sessão, e sua idempotência e validação de `authToken` só se provam contra o endpoint real.
+**Como resolver quando o dev decidir:** gerar token em supabase.com/dashboard/account/tokens, colocar em `docs/credentials.md`; ou o dev roda `npx supabase login` + `functions deploy` + `secrets set` no próprio terminal.
+**Também pendente:** o agendamento do job (pg_cron no Supabase vs serviço externo) não foi decidido. Sem agendamento, a function existe e nunca é chamada.
+**Escopo:** Todas as Edge Functions do projeto.
+
+### [2026-09-10] Edge Functions deployadas e secrets configurados
+**Contexto:** O dev forneceu o Personal Access Token do Supabase (`sbp_...`, token "talitha-cli"), desbloqueando o que estava registrado como pendência algumas horas antes.
+**Feito:** token salvo em `~/.supabase/access-token`; **10 secrets** configurados no projeto (`CRON_SECRET`, `RESEND_API_KEY_CRON`, `SITE_URL`, `EMAIL_FROM`, `ASAAS_API_KEY`, `ASAAS_WEBHOOK_TOKEN`, `ASAAS_BASE_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_URL`) — os do Asaas e LiveKit adiantados para as Sprints 5 e 6; e a function `send-reminders` deployada com `--no-verify-jwt`, porque ela autentica por `CRON_SECRET` e não por JWT de usuário.
+**Validado por execução:** sem header → 401; `Bearer` com secret errado → 401; `Bearer` com secret correto → 200 e consulta ao banco bem-sucedida. A autenticação `timingSafeEqual` funciona e a function alcança o Postgres.
+**Header esperado:** `Authorization: Bearer <CRON_SECRET>` — não header customizado. Relevante para configurar o agendador.
+**PENDENTE — o agendamento.** A function existe e responde, mas **nada a chama**. Sem agendador, os lembretes nunca saem. Duas opções em aberto: `pg_cron` no Supabase (nativo, versionável como migration, sem infra externa) ou cron externo fazendo POST. Decisão do dev.
+**PENDENTE — renovação do token.** O access token **vence em 31 de dezembro**. Depois disso, deploy de Edge Function e `secrets set` param de funcionar até renovar.
+**Escopo:** Infraestrutura de Edge Functions.
+
+### [2026-09-10] Riscos residuais aceitos no retry de lembretes
+**Contexto:** A correção do W3 da Sprint 4 usa `delivery_status` como máquina de estados para reenvio: `failed` com menos de 2h desde a primeira tentativa vira `pending` e reenvia (~8 tentativas com cron de 15 min).
+**Dois riscos residuais aceitos, ambos para revisitar na Sprint 8:**
+1. **`pending` órfão** — se a Edge Function morrer entre marcar `pending` e concluir o envio, a linha fica `pending` para sempre e toda invocação futura pula, achando que outra está tratando. O lembrete nunca sai e nada sinaliza. Mitigação atual: o lembrete de 1h é tipo independente e ainda funciona. Correção sugerida: tratar `pending` com `updated_at` acima de 5 min como abandonado.
+2. **Duplicação** — duas invocações concorrentes que vejam `failed` ao mesmo tempo reenviam as duas, e o paciente recebe dois e-mails. Mitigação atual: cron de 15 min com função terminando em menos de 30s torna sobreposição improvável. Correção sugerida: `UPDATE ... WHERE delivery_status = 'failed' RETURNING *` como claim atômico.
+**Por que aceito:** ambos exigem falha de infraestrutura ou concorrência que a escala de uma profissional solo torna improvável, e a complexidade de resolver agora é desproporcional ao risco.
+**Escopo:** Edge Function `send-reminders`.
+
+### [2026-09-10] E-mail de retry de lembrete sai sem links de ação
+**Contexto:** O token de confirmação/cancelamento existe no banco **apenas como hash** — o valor original não é recuperável para remontar o link.
+**Decisão:** o e-mail de reenvio sai sem os botões de confirmar e cancelar. O paciente age pelo portal.
+**Alternativa descartada:** gerar tokens novos no retry e invalidar os antigos — mais código e mais superfície de erro, para um caso que só ocorre quando o primeiro envio falhou.
+**Consequência aceita:** quem recebe apenas o retry perde a conveniência do "confirmar em um clique", que é parte do que reduz no-show. Revisitar se a taxa de no-show na prática mostrar que importa.
+**Escopo:** Edge Function `send-reminders`.

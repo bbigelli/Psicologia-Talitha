@@ -157,11 +157,14 @@ export default function PortalPage() {
   )
 }
 
-// --- Date formatting helpers ---
+// --- Date formatting helpers (explicit Brazil TZ — never server TZ) ---
+
+const BRAZIL_TZ = "America/Sao_Paulo"
 
 function formatDate(iso: string): string {
   const date = new Date(iso)
   return date.toLocaleDateString("pt-BR", {
+    timeZone: BRAZIL_TZ,
     weekday: "long",
     day: "numeric",
     month: "short",
@@ -171,6 +174,7 @@ function formatDate(iso: string): string {
 function formatShortDate(iso: string): string {
   const date = new Date(iso)
   return date.toLocaleDateString("pt-BR", {
+    timeZone: BRAZIL_TZ,
     weekday: "short",
     day: "numeric",
     month: "short",
@@ -180,6 +184,7 @@ function formatShortDate(iso: string): string {
 function formatTime(iso: string): string {
   const date = new Date(iso)
   return date.toLocaleTimeString("pt-BR", {
+    timeZone: BRAZIL_TZ,
     hour: "2-digit",
     minute: "2-digit",
   })
@@ -189,6 +194,7 @@ function formatEndTime(iso: string, durationMinutes: number): string {
   const date = new Date(iso)
   date.setMinutes(date.getMinutes() + durationMinutes)
   return date.toLocaleTimeString("pt-BR", {
+    timeZone: BRAZIL_TZ,
     hour: "2-digit",
     minute: "2-digit",
   })
