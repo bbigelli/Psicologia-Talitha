@@ -105,9 +105,14 @@
 - Testes: 375 passando, 1 pulado (376 total) -- SEM REGRESSAO (324 anteriores intactos + 52 novos)
 - Segredos: varredura limpa, nenhum segredo hardcoded
 
-### RPCs novas necessarias (Data Architect)
-- `create_session(p_patient_id, p_psychologist_id, p_scheduled_at, p_duration_minutes, p_recurrence_group_id)` -- INSERT na tabela sessions via SECURITY DEFINER (atualmente usando admin client)
-- `reschedule_session(p_session_id, p_new_scheduled_at)` -- UPDATE scheduled_at com validacao de ownership e status (atualmente usando admin client; trigger fn_sessions_on_reschedule ja regenera room_name)
+### RPCs (migration 17, aplicada)
+- `create_session` -- chamado via client autenticado (RPC deriva psychologist_id de auth.uid())
+- `reschedule_session` -- chamado via client autenticado (RPC valida ownership, status, conflito)
+- Admin client REMOVIDO de sessions.ts -- zero imports de createAdminClient
+
+### Admin client restante nesta sprint (justificado)
+- `src/lib/actions/confirm-action.ts` -- usuario nao autenticado (clicando link de email); email_action_tokens nao tem RLS; cancel/confirm exigem service_role
+- `src/app/(auth)/confirmar/[token]/page.tsx` -- pagina publica lendo token sem auth
 
 ### Deploy pendente (Edge Function)
 - `supabase/functions/send-reminders/index.ts` -- deploy via `supabase functions deploy send-reminders`
@@ -116,13 +121,13 @@
 - Access token do Supabase nao configurado nesta maquina -- deploy requer acao do dev
 
 ### Decisoes tomadas pelo agente (sem consulta)
-1. Sessions INSERT via admin client (service_role) ao inves de RPC nova -- conservador, funcional, reportado para Data Architect escrever a RPC
-2. Reschedule via admin client ao inves de RPC nova -- mesma razao
-3. Cancel via RPC existente cancel_session -- ja existia, usa diretamente
-4. Confirmation tokens no 24h reminder apenas (nao no 1h) -- 1h e muito tarde para confirmar/cancelar
-5. Cancellation via email token usa admin client diretamente (sem auth.uid()) porque e acao anonima de link
-6. Timezone: America/Sao_Paulo explicito em todas as formatacoes -- offset -03:00 para timestamptz
-7. tsconfig.json exclui supabase/functions/ (Deno, nao Node.js)
+1. RPCs create_session e reschedule_session adotadas via client autenticado -- admin client removido de sessions.ts
+2. Cancel via RPC existente cancel_session -- ja existia, usa diretamente. Late-cancellation prefix enviado na propria chamada da RPC (sem UPDATE separado)
+3. Confirmation tokens no 24h reminder apenas (nao no 1h) -- 1h e muito tarde para confirmar/cancelar
+4. Cancellation via email token usa admin client (sem auth.uid()) porque e acao anonima de link -- justificado
+5. Timezone: America/Sao_Paulo explicito em todas as formatacoes -- offset -03:00 para timestamptz
+6. tsconfig.json exclui supabase/functions/ (Deno, nao Node.js)
+7. App-side conflict check mantido para UX (mostra qual paciente conflita) mas RPC e a garantia; erros da RPC mapeados para pt-BR via mapRpcError()
 
 ### Pendencias tecnicas acumuladas
 - **F6 (WARNING):** Politica de senha no Supabase Auth dashboard NAO configurada
