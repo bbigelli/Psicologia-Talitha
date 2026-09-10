@@ -146,3 +146,40 @@ export function decrypt(
 
   return decrypted.toString("utf8")
 }
+
+/**
+ * Convert a hex string to Postgres BYTEA literal format.
+ *
+ * PostgREST expects hex strings with `\x` prefix for BYTEA columns.
+ * Without the prefix, PostgREST interprets the hex as ASCII text,
+ * doubling the byte count and corrupting the ciphertext. The corruption
+ * is silent on write — the error only surfaces on decrypt ("Invalid
+ * authentication tag length").
+ *
+ * This function MUST be used every time an envelope field is written
+ * to a BYTEA column via Supabase client (PostgREST).
+ */
+export function hexToBytea(hex: string): string {
+  return `\\x${hex}`
+}
+
+/**
+ * Convert all envelope fields to BYTEA-safe format for Supabase insert/update.
+ *
+ * Returns an object with the same field names used by the database columns,
+ * ready to spread into an insert/update call.
+ */
+export function envelopeToBytea(
+  envelope: EncryptedEnvelope,
+  prefix: string,
+): Record<string, string | number> {
+  return {
+    [`${prefix}_ciphertext`]: hexToBytea(envelope.contentCiphertext),
+    [`${prefix}_iv`]: hexToBytea(envelope.contentIv),
+    [`${prefix}_tag`]: hexToBytea(envelope.contentTag),
+    [`${prefix}_dek_wrapped`]: hexToBytea(envelope.dekWrapped),
+    [`${prefix}_dek_iv`]: hexToBytea(envelope.dekIv),
+    [`${prefix}_dek_tag`]: hexToBytea(envelope.dekTag),
+    [`${prefix}_kek_version`]: envelope.kekVersion,
+  }
+}

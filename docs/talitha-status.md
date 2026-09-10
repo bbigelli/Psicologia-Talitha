@@ -100,7 +100,7 @@
 - Patient layout: atualizado com consent check (defense-in-depth)
 - Build: PASSA (19 rotas)
 - TypeScript: PASSA (zero erros)
-- Testes: 217 total (216 passando, 1 pulado) -- SEM REGRESSAO
+- Testes: 317 total (316 passando, 1 pulado) -- SEM REGRESSAO (QA 85 + roundtrip 6)
 - Resend SDK instalado (v4)
 
 ### Decisoes tomadas pelo agente (sem perguntar ao dev)
@@ -138,8 +138,18 @@
 - RLS: isolamento paciente-paciente validado com dados reais
 - Column-level grants: cpf_ciphertext/cpf_hmac bloqueados para authenticated
 
+### BLOCKER-1: CORRIGIDO
+- hexToBytea() movido de patients.ts local para src/lib/crypto/envelope.ts (funcao exportada)
+- envelopeToBytea() helper tambem adicionado (converte envelope inteiro)
+- profile.ts: ambos completeOnboarding e updateProfile agora usam hexToBytea (linhas 42-48 e 89-95)
+- patients.ts: atualizado para importar de @/lib/crypto/envelope (funcao local removida)
+- Auditoria completa: ZERO outros locais no projeto gravavam BYTEA sem prefixo
+- Teste de round-trip: src/__tests__/lib/crypto/bytea-roundtrip.test.ts (6 testes, todos passando)
+  - Profile CPF round-trip (encrypt -> hexToBytea -> strip prefix -> decrypt) OK
+  - Patient CPF round-trip OK
+  - Hex SEM prefixo -> decrypt FALHA (prova do bug)
+
 ### Pendencias acumuladas
-- **BLOCKER-1:** profile.ts precisa hexToBytea() -- OBRIGATORIO antes de qualquer onboarding
 - **F6 (WARNING):** Politica de senha no Supabase Auth dashboard NAO configurada
 - S1: middleware.ts deprecation
 - S4: ProfileForm exige CPF em toda edicao
@@ -147,8 +157,8 @@
 - S7: x-forwarded-for trust rule ausente
 - S10: Considerar wrapper withAuthenticatedUser
 - S11: eslint error em MfaSetup.tsx
-- EMAIL_FROM e RESEND_API_KEY_APP nao adicionados ao .env.example
+- EMAIL_FROM e RESEND_API_KEY_APP nao adicionados ao .env.example (permissao negada)
 - W1: unused imports na Sprint 3 (4 arquivos)
 
 ### Proximo passo
-Corrigir BLOCKER-1 (profile.ts hexToBytea), depois avancar para Sprint 4 -- Agenda & Lembretes.
+BLOCKER-1 corrigido. Sprint 3 pronta. Avancar para Sprint 4 -- Agenda & Lembretes.

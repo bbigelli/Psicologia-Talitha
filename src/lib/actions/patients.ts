@@ -19,7 +19,7 @@ import { revalidatePath } from "next/cache"
 
 import { withPsychologist } from "@/lib/actions/_guard"
 import { createAdminClient } from "@/lib/supabase/admin"
-import { encrypt } from "@/lib/crypto/envelope"
+import { encrypt, hexToBytea } from "@/lib/crypto/envelope"
 import { computeCpfBlindIndex } from "@/lib/crypto/blind-index"
 import {
   createPatientSchema,
@@ -342,10 +342,3 @@ export const resendInvite = withPsychologist(
   },
 )
 
-/**
- * Convert hex string to Postgres BYTEA literal format.
- * PostgREST expects hex strings with \\x prefix for BYTEA columns.
- */
-function hexToBytea(hex: string): string {
-  return `\\x${hex}`
-}
