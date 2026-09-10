@@ -232,29 +232,115 @@ Deno.serve(async (req: Request) => {
   }
 
   // --- Find the charge by asaas_payment_id ---
-  const { data: charge, error: chargeError } = await adminClient
+  let charge: { id: string; patient_id: string; status: string } | null = null
+
+  const { data: existingCharge } = await adminClient
     .from("charges")
     .select("id, patient_id, status")
     .eq("asaas_payment_id", paymentIdFromPayload)
-    .single()
+    .maybeSingle()
 
-  if (chargeError || !charge) {
-    await adminClient
-      .from("payment_webhook_events")
-      .update({
-        status: authoritativeStatus,
-        value: authoritativeValue,
-        due_date: authoritativeDueDate,
-        processed_at: new Date().toISOString(),
-        result: "charge_not_found",
-      })
-      .eq("asaas_event_id", asaasEventId)
+  if (existingCharge) {
+    charge = existingCharge
+  } else {
+    // Charge not found locally. This may be a subscription-generated charge
+    // from Asaas. The authoritative payment data (from Rule 2 re-consult)
+    // includes a `subscription` field if the payment belongs to a subscription.
+    // We need to re-read the full payment to get the subscription field.
+    let asaasSubscriptionId: string | null = null
+    let asaasCustomerId: string | null = null
+    let paymentMethod: string | null = null
 
-    // Return 200 — no point retrying if charge doesn't exist
-    return new Response(
-      JSON.stringify({ received: true, charge_not_found: true }),
-      { headers: { "Content-Type": "application/json" } },
-    )
+    try {
+      const fullPaymentResp = await fetch(
+        `${asaasBaseUrl}/payments/${paymentIdFromPayload}`,
+        { headers: { access_token: asaasApiKey } },
+      )
+      if (fullPaymentResp.ok) {
+        const fullPayment = await fullPaymentResp.json()
+        asaasSubscriptionId = fullPayment.subscription || null
+        asaasCustomerId = fullPayment.customer || null
+        // Map Asaas billing type to our payment method
+        const billingMap: Record<string, string> = {
+          PIX: "pix",
+          BOLETO: "boleto",
+          CREDIT_CARD: "credit_card",
+        }
+        paymentMethod = billingMap[fullPayment.billingType] || null
+      }
+    } catch {
+      // Re-consult failed — we already have the data from the first re-consult
+    }
+
+    if (asaasSubscriptionId) {
+      // Look up our subscription by asaas_subscription_id
+      const { data: localSub } = await adminClient
+        .from("subscriptions")
+        .select("id, patient_id, psychologist_id")
+        .eq("asaas_subscription_id", asaasSubscriptionId)
+        .maybeSingle()
+
+      if (localSub) {
+        // Create a local charge record for this subscription-generated payment
+        const { data: newCharge, error: createError } = await adminClient
+          .from("charges")
+          .insert({
+            patient_id: localSub.patient_id,
+            psychologist_id: localSub.psychologist_id,
+            subscription_id: localSub.id,
+            asaas_payment_id: paymentIdFromPayload,
+            asaas_customer_id: asaasCustomerId,
+            amount: authoritativeValue ?? 0,
+            due_date: authoritativeDueDate ?? new Date().toISOString().split("T")[0],
+            payment_method: paymentMethod,
+            description: "Prestacao de servicos profissionais - Pacote mensal",
+            status: "pending",
+          })
+          .select("id, patient_id, status")
+          .single()
+
+        if (createError || !newCharge) {
+          // INSERT failed — could be duplicate asaas_payment_id (UNIQUE)
+          // or another constraint. Log and return 200.
+          await adminClient
+            .from("payment_webhook_events")
+            .update({
+              status: authoritativeStatus,
+              value: authoritativeValue,
+              due_date: authoritativeDueDate,
+              processed_at: new Date().toISOString(),
+              result: "subscription_charge_create_failed",
+            })
+            .eq("asaas_event_id", asaasEventId)
+
+          return new Response(
+            JSON.stringify({ received: true, subscription_charge_create_failed: true }),
+            { headers: { "Content-Type": "application/json" } },
+          )
+        }
+
+        charge = newCharge
+      }
+    }
+
+    if (!charge) {
+      // Not a subscription charge either — genuinely not found
+      await adminClient
+        .from("payment_webhook_events")
+        .update({
+          status: authoritativeStatus,
+          value: authoritativeValue,
+          due_date: authoritativeDueDate,
+          processed_at: new Date().toISOString(),
+          result: "charge_not_found",
+        })
+        .eq("asaas_event_id", asaasEventId)
+
+      return new Response(
+        JSON.stringify({ received: true, charge_not_found: true }),
+        { headers: { "Content-Type": "application/json" } },
+      )
+    }
   }
 
   // --- Update charge status ---

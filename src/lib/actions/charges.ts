@@ -379,9 +379,6 @@ export const createSubscription = withPsychologist(
     }
 
     // Insert subscription record locally
-    // NOTE: Asaas subscription creation via POST /v3/subscriptions is deferred
-    // to a create-subscription Edge Function (not yet implemented — reported).
-    // The subscription record tracks the package locally.
     const today = new Date()
     const { data: subscription, error: insertError } = await admin
       .from("subscriptions")
@@ -406,6 +403,34 @@ export const createSubscription = withPsychologist(
       return {
         subscriptionId: null,
         error: "Nao foi possivel criar a assinatura. Tente novamente.",
+      } as const
+    }
+
+    // AFTER this point the subscription exists in the DB. Never throw.
+
+    // Call create-subscription Edge Function (ONLY subscription_id)
+    const { error: efError } = await ctx.supabase.functions.invoke(
+      "create-subscription",
+      { body: { subscription_id: subscription.id } },
+    )
+
+    if (efError) {
+      logError({
+        event_type: "create_subscription_ef_failure",
+        patient_id: parsed.patient_id,
+        error_code: "EF_ERROR",
+      })
+      // EF failed — cancel the subscription locally since the Asaas
+      // subscription was not created. Without the Asaas link, no
+      // recurring charges will be generated.
+      await admin
+        .from("subscriptions")
+        .update({ status: "cancelled" })
+        .eq("id", subscription.id)
+
+      return {
+        subscriptionId: null,
+        error: "Nao foi possivel criar a assinatura no servico de pagamento. Tente novamente.",
       } as const
     }
 

@@ -1,6 +1,6 @@
 # Data Architecture: Talitha Psicologia
 
-**Versao:** 1.7
+**Versao:** 1.8
 **Data:** 2026-09-09
 **Referencia:** `docs/talitha-architecture.md` (v1.1, secao 17), `docs/talitha-security-review-architecture.md` (secao 4), `docs/talitha-security-review-schema.md` (patches A1-A4, M1, B1-B2, R19), `docs/talitha-security-review-prd.md`, `docs/talitha-prd.md` (emendas E1-E8), `docs/adr/ADR-0001..0006`, `CLAUDE.md`, `docs/decisions.md`
 
@@ -76,6 +76,7 @@ erDiagram
 - A2: Trigger `trg_patients_set_retention` auto-calcula `retention_until = treatment_ended_at + 5 years` e impede reducao manual
 - A2: `fn_block_delete_patient_retention` bloqueia DELETE quando `treatment_ended_at IS NOT NULL AND retention_until IS NULL` (safety net)
 - A4: REVOKE ALL table-level + GRANT SELECT column-level (colunas cifradas inacessiveis)
+- `asaas_customer_id TEXT UNIQUE` — ID opaco do Asaas (D11 Interno, sem cifra). Escrito por service_role (Edge Function). Excluido do GRANT SELECT (browser nao precisa). Eliminavel por LGPD (R20).
 
 ### 3. sessions
 
@@ -444,9 +445,22 @@ SELECT create_session('<other_psych_patient_id>'::uuid, now() + interval '2 days
 -- ESPERADO: ERROR P0001 (Patient not found)
 RESET ROLE;
 ```
+
+### V21. asaas_customer_id nao escrevivel por authenticated
+
+```sql
+SET ROLE authenticated;
+SET request.jwt.claim.sub = '<psych_uid>';
+SET request.jwt.claims = '{"role":"authenticated","aal":"aal2"}';
+UPDATE patients SET asaas_customer_id = 'cus_fake' WHERE id = '<patient_id>';
+-- ESPERADO: ERROR 42501 (permission denied — authenticated has no UPDATE on patients)
+SELECT asaas_customer_id FROM patients LIMIT 1;
+-- ESPERADO: ERROR 42501 (column not in GRANT SELECT)
+RESET ROLE;
+```
 ---
 
-## Decisoes (v1.6)
+## Decisoes (v1.8)
 
 | Decisao | Alternativa descartada | Motivo |
 |---------|----------------------|--------|
@@ -464,7 +478,7 @@ RESET ROLE;
 | F5: fn_is_psychologist() SD + STABLE | JWT claim (auth.jwt()->app_metadata->role) | Preserva R13: policies leem a fonte canonica (profiles.role no banco), nao um claim JWT que pode estar stale. A funcao SD bypassa a RLS de profiles, eliminando 42P17. STABLE = avaliada uma vez por query, nao por linha |
 ---
 
-## Migrations (v1.6)
+## Migrations (v1.8)
 
 | Arquivo | Conteudo |
 |---------|----------|
@@ -485,8 +499,9 @@ RESET ROLE;
 | `20260909121400_patch_f4_canonical_grants.sql` | **F4 fix:** REVOKE triplo (PUBLIC, anon, authenticated) + GRANT explicito em todas as 9 funcoes. Padrao canonico estabelecido |
 | `20260909121500_patch_f5_rls_recursion.sql` | **F5:** fn_is_psychologist() SD+STABLE + DROP/CREATE 13 policies. **F5b:** GRANT UPDATE cipher columns em profiles |
 | `20260909121600_rpc_create_reschedule_session.sql` | `create_session` + `reschedule_session` RPCs SD. Conflito de horario por overlap de intervalo. REVOKE triplo |
+| `20260909121700_add_asaas_customer_id.sql` | `patients.asaas_customer_id TEXT UNIQUE`. D11 Interno, sem cifra. Escrito por service_role. Excluido do SELECT grant. Eliminavel |
 
-**16 migrations aplicadas. Migration 17 (create+reschedule session RPCs) pendente.
+**17 migrations aplicadas. Migration 18 (asaas_customer_id) pendente.
 
 ---
 
@@ -502,3 +517,4 @@ RESET ROLE;
 | 1.5 | 2026-09-09 | F4: REVOKE triplo canonico (PUBLIC + anon + authenticated) em todas as 9 funcoes. Corrige fn_anchor_audit_chain acessivel por anon. Licao F2 corrigida: duas fontes independentes de privilegio, nao uma. V11 reescrita com fn_anchor. V18 generica (has_function_privilege sweep). Regra adicionada ao CLAUDE.md. |
 | 1.6 | 2026-09-09 | F5: fn_is_psychologist() SD+STABLE elimina 42P17 em 13 policies. R13 preservado (leitura de profiles.role no banco, nao JWT). F5b: GRANT UPDATE cipher columns em profiles. V19 adicionada. 10 RPCs SD. Regras de self-ref e has_function_privilege adicionadas ao CLAUDE.md. |
 | 1.7 | 2026-09-10 | Sprint 4: create_session + reschedule_session RPCs SD. psychologist_id de auth.uid(), conflito por overlap de intervalo, aal2, ownership. 12 RPCs SD. V20. |
+| 1.8 | 2026-09-10 | Sprint 5: patients.asaas_customer_id TEXT UNIQUE. D11 Interno, sem cifra, service_role only, excluido de SELECT grant, eliminavel por LGPD. V21. |
