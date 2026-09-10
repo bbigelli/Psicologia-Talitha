@@ -106,3 +106,11 @@ Registro de decisões de produto, arquitetura e técnicas. Ver `~/.claude/CLAUDE
 **Decisão:** V18 fica como verificação manual no SQL Editor do dashboard, a rodar antes de cada deploy, até que o projeto tenha um cliente Postgres direto nos testes.
 **Pendência técnica:** adicionar `pg` como devDependency habilitaria `SET ROLE` nos testes de integração e automatizaria a V18 — vale avaliar na Sprint 2, quando o QA precisar testar RLS por papel autenticado.
 **Escopo:** Verificações de segurança do banco.
+
+### [2026-09-10] Deploy de Edge Functions pendente — falta Personal Access Token do Supabase
+**Contexto:** A Sprint 4 criou a primeira Edge Function (`send-reminders`). Deploy e `supabase secrets set` exigem um **Personal Access Token de conta** do Supabase (`~/.supabase/access-token`), que não existe nesta máquina. As chaves de projeto já fornecidas (anon, service_role, database password) não servem para isso.
+**Decisão:** seguir o desenvolvimento com as Edge Functions **escritas e versionadas, mas não deployadas**. A lógica de decisão é extraída em função pura e testada isoladamente, para que a ausência de deploy não deixe o comportamento sem cobertura.
+**Consequência aceita:** nenhum fluxo que dependa de Edge Function é testável ponta a ponta até o deploy — lembretes (Sprint 4), **webhook do Asaas (Sprint 5)** e emissão de token do LiveKit (Sprint 6). O webhook do Asaas é o mais crítico: é ele que concilia pagamento com sessão, e sua idempotência e validação de `authToken` só se provam contra o endpoint real.
+**Como resolver quando o dev decidir:** gerar token em supabase.com/dashboard/account/tokens, colocar em `docs/credentials.md`; ou o dev roda `npx supabase login` + `functions deploy` + `secrets set` no próprio terminal.
+**Também pendente:** o agendamento do job (pg_cron no Supabase vs serviço externo) não foi decidido. Sem agendamento, a function existe e nunca é chamada.
+**Escopo:** Todas as Edge Functions do projeto.

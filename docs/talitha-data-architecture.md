@@ -1,6 +1,6 @@
 # Data Architecture: Talitha Psicologia
 
-**Versao:** 1.6
+**Versao:** 1.7
 **Data:** 2026-09-09
 **Referencia:** `docs/talitha-architecture.md` (v1.1, secao 17), `docs/talitha-security-review-architecture.md` (secao 4), `docs/talitha-security-review-schema.md` (patches A1-A4, M1, B1-B2, R19), `docs/talitha-security-review-prd.md`, `docs/talitha-prd.md` (emendas E1-E8), `docs/adr/ADR-0001..0006`, `CLAUDE.md`, `docs/decisions.md`
 
@@ -205,6 +205,8 @@ UNIQUE constraints de banco para idempotencia.
 | `fn_verify_audit_chain` | Recalcula e verifica integridade do hash chain |
 | `fn_anchor_audit_chain` | Verificacao automatizada do chain para cron/ancora (service_role only, retorno minimo) |
 | `fn_is_psychologist` | Helper STABLE SD para policies RLS. Le profiles.role bypassando RLS (evita 42P17). R13 preservado |
+| `create_session` | Cria sessao: auth+role+aal2+ownership+futuro+duracao+conflito. psychologist_id de auth.uid(). room_name pelo DEFAULT |
+| `reschedule_session` | Remarca sessao: auth+role+aal2+ownership+status+futuro+conflito. Trigger regenera room_name |
 | `fn_profiles_sync_role_metadata` | Espelha role em app_metadata (trigger SD) |
 
 ---
@@ -414,6 +416,34 @@ RESET ROLE;
 sessao anonima nao exercita o branch autenticado — o resultado vazio e
 indistinguivel de "corretamente bloqueado". O bug so aparece no primeiro
 teste com sessao real.
+
+### V20. RPCs de sessao — autorizacao e conflito (Sprint 4)
+
+```sql
+-- 1. anon nao executa
+SET ROLE anon;
+SELECT create_session(gen_random_uuid(), now() + interval '1 day');
+-- ESPERADO: ERROR 42501
+RESET ROLE;
+
+-- 2. authenticated sem aal2 nao executa
+SET ROLE authenticated;
+SET request.jwt.claim.sub = '<psych_uid>';
+SET request.jwt.claims = '{"role":"authenticated","aal":"aal1"}';
+SELECT create_session('<patient_id>'::uuid, now() + interval '1 day');
+-- ESPERADO: ERROR P0001 (MFA required)
+
+-- 3. Conflito de horario e rejeitado
+-- (apos criar sessao amanha 14h-14h50)
+SET request.jwt.claims = '{"role":"authenticated","aal":"aal2"}';
+SELECT create_session('<patient_id>'::uuid, (now()::date + 1 + time '14:25')::timestamptz);
+-- ESPERADO: ERROR P0001 (Schedule conflict)
+
+-- 4. Psicologa nao cria sessao para paciente de outro profissional
+SELECT create_session('<other_psych_patient_id>'::uuid, now() + interval '2 days');
+-- ESPERADO: ERROR P0001 (Patient not found)
+RESET ROLE;
+```
 ---
 
 ## Decisoes (v1.6)
@@ -454,8 +484,9 @@ teste com sessao real.
 | `20260909121300_patch_verify_chain_split.sql` | Split: fn_verify_audit_chain (psychologist, diagnostico) + **fn_anchor_audit_chain** (service_role, ancora). REVOKE service_role de fn_verify. V17 |
 | `20260909121400_patch_f4_canonical_grants.sql` | **F4 fix:** REVOKE triplo (PUBLIC, anon, authenticated) + GRANT explicito em todas as 9 funcoes. Padrao canonico estabelecido |
 | `20260909121500_patch_f5_rls_recursion.sql` | **F5:** fn_is_psychologist() SD+STABLE + DROP/CREATE 13 policies. **F5b:** GRANT UPDATE cipher columns em profiles |
+| `20260909121600_rpc_create_reschedule_session.sql` | `create_session` + `reschedule_session` RPCs SD. Conflito de horario por overlap de intervalo. REVOKE triplo |
 
-**15 migrations aplicadas. Migration 16 (F5 RLS recursion) pendente.
+**16 migrations aplicadas. Migration 17 (create+reschedule session RPCs) pendente.
 
 ---
 
@@ -470,3 +501,4 @@ teste com sessao real.
 | 1.4 | 2026-09-09 | Anchor split: fn_verify_audit_chain (psychologist only) + fn_anchor_audit_chain (service_role only, retorno minimo). REVOKE service_role de fn_verify. V17 adicionada. 9 RPCs SD. |
 | 1.5 | 2026-09-09 | F4: REVOKE triplo canonico (PUBLIC + anon + authenticated) em todas as 9 funcoes. Corrige fn_anchor_audit_chain acessivel por anon. Licao F2 corrigida: duas fontes independentes de privilegio, nao uma. V11 reescrita com fn_anchor. V18 generica (has_function_privilege sweep). Regra adicionada ao CLAUDE.md. |
 | 1.6 | 2026-09-09 | F5: fn_is_psychologist() SD+STABLE elimina 42P17 em 13 policies. R13 preservado (leitura de profiles.role no banco, nao JWT). F5b: GRANT UPDATE cipher columns em profiles. V19 adicionada. 10 RPCs SD. Regras de self-ref e has_function_privilege adicionadas ao CLAUDE.md. |
+| 1.7 | 2026-09-10 | Sprint 4: create_session + reschedule_session RPCs SD. psychologist_id de auth.uid(), conflito por overlap de intervalo, aal2, ownership. 12 RPCs SD. V20. |
