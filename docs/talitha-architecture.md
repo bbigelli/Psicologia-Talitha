@@ -1,6 +1,6 @@
 # Arquitetura: Talitha Psicologia
 
-**Versao:** 1.1
+**Versao:** 1.2
 **Data:** 2026-09-09
 **Referencia:** `docs/talitha-prd.md`, `docs/talitha-security-review-prd.md`, `docs/talitha-security-review-architecture.md`, `docs/talitha-design-system.md`, `docs/talitha-navigation-flow.md`, `docs/talitha-user-stories.md`, `docs/decisions.md`
 
@@ -169,6 +169,7 @@ talitha-psicologia/
 │   │   │   ├── clinical-records.ts
 │   │   │   ├── anamnesis.ts
 │   │   │   ├── consents.ts
+│   │   │   ├── confirm-action.ts     # Acao de link de e-mail (bearer token, sem sessao)
 │   │   │   ├── receipts.ts
 │   │   │   └── profile.ts
 │   │   ├── crypto/
@@ -293,13 +294,31 @@ export function withPsychologist<T, R>(
 
 ### 6.2 Regras de acesso
 
-1. **`SUPABASE_SERVICE_ROLE_KEY`** — allowlist fechada de uso. O client padrao de Server Actions e Route Handlers e o **client do usuario** (`@supabase/ssr`, RLS ativa). `service_role` permitido **apenas** em:
-   - Criacao do auth user no convite (Server Action `createPatient`)
-   - Leitura de sessao pela Edge Function `issue-livekit-token` (precisa verificar sessao de qualquer usuario)
-   - Escrita transacional do webhook `asaas-webhook` (via funcao `SECURITY DEFINER`)
-   - Edge Function `create-charge` (leitura do registro de cobranca)
-   - Instanciado **exclusivamente** em `src/lib/supabase/admin.ts`. Importacao deste modulo fora da allowlist = reprovacao em code review
-   - Preferir **RPC `SECURITY DEFINER` com JWT do usuario** a client `service_role` — mantem `auth.uid()` e o audit log correto
+1. **`SUPABASE_SERVICE_ROLE_KEY`** — allowlist fechada de uso no codigo Next.js. O client padrao de Server Actions e Route Handlers e o **client do usuario** (`@supabase/ssr`, RLS ativa). `service_role` so e aceitavel quando se aplicar **o principio e pelo menos uma das condicoes** abaixo.
+
+   **Principio:** `service_role` e aceitavel quando **nao existe sessao de usuario para autorizar** (fluxo iniciado por link de e-mail sem login, ou por job automatizado) **e** a autorizacao vem de outro mecanismo verificavel — token criptografico de uso unico com entropia suficiente, ou segredo compartilhado de cron. Nunca e aceitavel para "simplificar" acesso que poderia passar por RLS com o JWT do usuario. Se o usuario esta autenticado, usar o client do usuario.
+
+   **Allowlist — codigo Next.js (`src/`):**
+
+   | Arquivo | O que faz | Condicao que justifica |
+   |---------|-----------|------------------------|
+   | `src/lib/actions/patients.ts` | Criacao do auth user no convite (`createPatient`) | Supabase Auth admin API exige service_role para criar usuario |
+   | `src/lib/actions/confirm-action.ts` | Chama RPC `consume_email_token`, faz UPDATE de sessao (confirmar/cancelar presenca), chama `log_audit_system` | O usuario **nao esta autenticado** — e link de e-mail sem sessao. `email_action_tokens` nao tem policy de RLS (acesso so por RPC SECURITY DEFINER). A RPC `cancel_session` exige `auth.uid()`, que nao existe neste contexto. Autorizacao pelo **token criptografico** (~244 bits de entropia, uso unico, alvo derivado da cadeia do token) |
+   | `src/app/(auth)/confirmar/[token]/page.tsx` | Le o token e a sessao para exibir data e hora na pagina publica | Pagina publica sem sessao autenticada; `email_action_tokens` nao tem policy de RLS. Apenas leitura para renderizar informacao minima |
+
+   **Limite destes dois casos:** a autorizacao e **pelo token**, nao pela sessao. O alvo (sessao, paciente) e derivado **exclusivamente** da cadeia do token — nada do payload ou da URL influencia qual sessao e afetada. Se algum dia o fluxo de confirmacao ganhar sessao autenticada, estes dois devem migrar para o client do usuario.
+
+   Demais entradas na allowlist:
+
+   | Arquivo | O que faz | Condicao que justifica |
+   |---------|-----------|------------------------|
+   | `src/app/api/receipts/[id]/download/route.ts` | Leitura do recibo + decifra CPF para gerar PDF | Route Handler com guard de ownership; precisa acessar dados de outro dominio (cifra) sem depender de RLS para a query transacional |
+
+   Instanciado **exclusivamente** em `src/lib/supabase/admin.ts`. Importacao deste modulo fora da allowlist = reprovacao em code review.
+
+   Preferir **RPC `SECURITY DEFINER` com JWT do usuario** a client `service_role` — mantem `auth.uid()` e o audit log correto.
+
+   **Escopo desta allowlist:** codigo Next.js (`src/`). Edge Functions do Supabase (`supabase/functions/`) **nao sao cobertas por esta allowlist** — elas rodam em dominio separado, com segredos proprios em `supabase secrets`, e o uso de `service_role` e inerente ao seu modelo de execucao (a Edge Function recebe o JWT do chamador via `Authorization` header e usa `getUser(jwt)` para extrair o `uid`, mas acessa o banco com `service_role` para verificar dados de outros usuarios — ex: `issue-livekit-token` precisa carregar a sessao de qualquer paciente para validar ownership). O controle de cada Edge Function e definido pela sua configuracao de `verify_jwt`, pelas pre-condicoes especificadas na secao 8, e pela assinatura das RPCs `SECURITY DEFINER` que ela chama.
 
 2. **`getUser()` sempre, `getSession()` nunca** em codigo server-side.
 
@@ -422,7 +441,7 @@ Pre-condicoes (na ordem, falha → resposta generica):
 **Fluxo de cobranca (corrigido):**
 1. Server Action (`withPsychologist`) valida input, grava `charges` com `status = 'pending_creation'`.
 2. Server Action chama `supabase.functions.invoke('create-charge', { body: { charge_id } })`.
-3. Edge Function lê o registro, chama o Asaas, atualiza o status.
+3. Edge Function le o registro, chama o Asaas, atualiza o status.
 4. Falha do Asaas → charge permanece `pending_creation`; toast generico ao usuario.
 
 **Edge Function `retry-charges` (verify_jwt=false, CRON_SECRET):**
@@ -767,7 +786,7 @@ Requisitos estruturais impostos ao schema. Cada item e verificavel e nao deve se
 11. **`consents`** — append-only; `purpose` enum por finalidade; `consent_text_hash`; `ip` (inet); `user_agent`; **todos os timestamps `timestamptz` UTC** (valor probatorio). **Sem `subject_type = 'guardian'`** (removido pela Emenda E1). Incluir coluna/tabela de **preferencia de comunicacao** (opt-out por canal/finalidade)
 12. **`clinical_record_versions`** — tabela append-only para versionamento de evolucoes
 13. **`profiles`** — `user_id` (FK auth.users), `role` (**fonte canonica**), `onboarding_completed`, `full_name`, `crp`, dados profissionais. Trigger espelha `role` em `app_metadata`. RLS proibe UPDATE da coluna `role` por qualquer usuario, inclusive o proprio. Policies clinicas incluem clausula `(auth.jwt()->>'aal') = 'aal2'`
-14. **`retention_until`** — retenção fixa em 5 anos (Emenda E1); **nao modelar `is_minor_at_start` nem regra de 20 anos**. DELETE fisico bloqueado por trigger durante a retencao. Todos os campos com valor probatorio em `timestamptz` UTC
+14. **`retention_until`** — retencao fixa em 5 anos (Emenda E1); **nao modelar `is_minor_at_start` nem regra de 20 anos**. DELETE fisico bloqueado por trigger durante a retencao. Todos os campos com valor probatorio em `timestamptz` UTC
 15. **PKs UUID** em toda tabela exposta em URL; proibido `bigserial`/`identity`
 16. **RLS obrigatoria** em toda tabela; `rowsecurity = false` = 0 linhas na query de verificacao
 17. **Supabase region `sa-east-1`** (Sao Paulo)
@@ -817,3 +836,4 @@ Condicoes de aprovacao em code review derivadas do Security Review da arquitetur
 |--------|------|---------|
 | 1.0 | 2026-09-09 | Arquitetura inicial |
 | 1.1 | 2026-09-09 | Correcoes do Security Review: AC1 (create-charge), AC2 (RLS column-level/RPC), AA1-AA2 (middleware nao e fronteira/wrappers), AA3 (aal2), AA4 (validacao de chaves), AA5-AA7 (cache/Dockerfile/supply chain), AA8 (confirmar GET/POST), AA9 (allowlist service_role), AA10 (duas funcoes audit), AA11 (session notes cifradas), AA12 (risco residual ADR-0001). Reescrita da secao 17 (32 requisitos ao Data Architect). Nova secao 18 (12 requisitos ao Stack Agent) |
+| 1.2 | 2026-09-10 | Allowlist de service_role na secao 6.2: adicionados confirm-action.ts e confirmar/[token]/page.tsx (autorizacao por bearer token); principio de decisao documentado; escopo de Edge Functions clarificado (governadas por verify_jwt e pre-condicoes da secao 8, nao por esta allowlist); confirm-action.ts adicionado a estrutura de pastas (secao 2) |
