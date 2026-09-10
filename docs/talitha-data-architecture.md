@@ -1,6 +1,6 @@
 # Data Architecture: Talitha Psicologia
 
-**Versao:** 1.3
+**Versao:** 1.4
 **Data:** 2026-09-09
 **Referencia:** `docs/talitha-architecture.md` (v1.1, secao 17), `docs/talitha-security-review-architecture.md` (secao 4), `docs/talitha-security-review-schema.md` (patches A1-A4, M1, B1-B2, R19), `docs/talitha-security-review-prd.md`, `docs/talitha-prd.md` (emendas E1-E8), `docs/adr/ADR-0001..0006`, `CLAUDE.md`, `docs/decisions.md`
 
@@ -203,6 +203,7 @@ UNIQUE constraints de banco para idempotencia.
 | `cancel_session` | Transicao controlada de estado |
 | `consume_email_token` | R19: valida expiracao, uso unico, purpose match atomicamente |
 | `fn_verify_audit_chain` | Recalcula e verifica integridade do hash chain |
+| `fn_anchor_audit_chain` | Verificacao automatizada do chain para cron/ancora (service_role only, retorno minimo) |
 | `fn_profiles_sync_role_metadata` | Espelha role em app_metadata (trigger SD) |
 
 ---
@@ -354,9 +355,24 @@ FROM audit_log ORDER BY created_at DESC LIMIT 1;
 -- Limpar entrada de teste:
 -- (nao possivel — audit_log e append-only. Entrada permanece como prova.)
 ```
+
+### V17. Ancora externa funciona via service_role (anchor split)
+
+```sql
+-- Prova que fn_anchor_audit_chain e executavel por service_role
+-- e que fn_verify_audit_chain NAO e.
+SET ROLE service_role;
+SELECT * FROM fn_anchor_audit_chain();
+-- ESPERADO: retorna (is_valid, total_entries, last_row_hash, last_occurred_at)
+--           sem erro. Se total_entries = 0, retorna (NULL, 0, NULL, NULL).
+
+SELECT * FROM fn_verify_audit_chain();
+-- ESPERADO: ERROR 42501 (permission denied — REVOKE service_role aplicado)
+RESET ROLE;
+```
 ---
 
-## Decisoes (v1.3)
+## Decisoes (v1.4)
 
 | Decisao | Alternativa descartada | Motivo |
 |---------|----------------------|--------|
@@ -370,9 +386,10 @@ FROM audit_log ORDER BY created_at DESC LIMIT 1;
 | A3: consents com 3 triggers + FORCE RLS + REVOKE | Apenas RLS sem UPDATE/DELETE | Mesma protecao do audit_log; valor probatorio identico (prova de consentimento) |
 
 | F2: REVOKE FROM PUBLIC, nao de role | REVOKE FROM anon (ineficaz) | Em PostgreSQL, funcoes recebem EXECUTE para PUBLIC por padrao na criacao. REVOKE de role nao remove privilegio herdado de PUBLIC. Deve-se REVOKE FROM PUBLIC + GRANT explicito |
+| Anchor: funcao separada (fn_anchor_audit_chain) | Permitir service_role na fn_verify_audit_chain existente | Menor privilegio: cron precisa de pass/fail + payload, nao de broken_at_id diagnostico. Superficie menor para automatizacao. Separacao de preocupacoes: investigacao interativa (psicologa) vs health check (cron) |
 ---
 
-## Migrations (v1.3)
+## Migrations (v1.4)
 
 | Arquivo | Conteudo |
 |---------|----------|
@@ -389,6 +406,7 @@ FROM audit_log ORDER BY created_at DESC LIMIT 1;
 | `20260909121000_grants_revokes_indexes.sql` | **A4: table-level REVOKE + column-level GRANT** (8 tabelas), A3: REVOKE on consents, B1: REVOKE anon on RPCs, indices |
 | `20260909121100_seed_development.sql` | receipt_counters init + guia |
 | `20260909121200_patch_f1_f2_f3.sql` | **F1:** NULL-safe comparisons em 8 RPCs (IS DISTINCT FROM). **F2:** REVOKE EXECUTE FROM PUBLIC + GRANT explicito. **F3:** extensions.digest() e extensions.gen_random_bytes() em 3 funcoes SD |
+| `20260909121300_patch_verify_chain_split.sql` | Split: fn_verify_audit_chain (psychologist, diagnostico) + **fn_anchor_audit_chain** (service_role, ancora). REVOKE service_role de fn_verify. V17 |
 
 **12 migrations originais aplicadas no banco. Migration 13 (patch F1-F2-F3) pendente de aplicacao pelo orquestrador.
 
@@ -402,3 +420,4 @@ FROM audit_log ORDER BY created_at DESC LIMIT 1;
 | 1.1 | 2026-09-09 | Patches do Security Review (A1-A4, M1, B1-B2, R19) + Emendas E5-E8. 20 tabelas, 8 RPCs SD. Fecha 4 requisitos parciais (R11, R12, R14, R19). E5: remove epsi_status. E6: nova tabela remote_viability_assessments. E7: sem mudanca de schema. E8: nenhuma vedacao automatica |
 | 1.2 | 2026-09-09 | N1: fn_block_delete_during_retention dividida em fn_block_delete_patient_retention (patients) e fn_block_delete_clinical_retention (tabelas clinicas via patient_id JOIN). Corrige referencia a coluna inexistente. V14 adicionada. |
 | 1.3 | 2026-09-09 | F1: NULL-safety em 8 RPCs/triggers (IS DISTINCT FROM). F2: REVOKE FROM PUBLIC + GRANT explicito em 8 funcoes. F3: schema-qualify pgcrypto (extensions.digest, extensions.gen_random_bytes) em 3 funcoes SD. V11 reescrita (teste funcional). V15-V16 adicionadas. Licao F2 registrada nas decisoes. |
+| 1.4 | 2026-09-09 | Anchor split: fn_verify_audit_chain (psychologist only) + fn_anchor_audit_chain (service_role only, retorno minimo). REVOKE service_role de fn_verify. V17 adicionada. 9 RPCs SD. |
