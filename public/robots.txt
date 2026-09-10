@@ -1,0 +1,14 @@
+User-agent: *
+Disallow: /portal
+Disallow: /dashboard
+Disallow: /pacientes
+Disallow: /financeiro
+Disallow: /agenda
+Disallow: /perfil
+Disallow: /sala
+Disallow: /convite
+Disallow: /confirmar
+Disallow: /termos
+Disallow: /onboarding
+Disallow: /mfa
+Disallow: /api
