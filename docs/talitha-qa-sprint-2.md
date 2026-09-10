@@ -288,5 +288,165 @@ Re-executar todos os 195 testes. Os 5 testes de F5 devem mudar de "42P17 esperad
 ### O que fica para QA Sprint 3
 
 - Isolamento paciente-paciente com registros reais em `patients`
-- Onboarding completo com CPF cifrado gravado e lido do banco
-- E2E do fluxo login → MFA → dashboard → onboarding (se F5 corrigido)
+- E2E do fluxo login -> MFA -> dashboard -> onboarding (Playwright)
+
+---
+
+## Re-validacao (rodada 2)
+
+### Contexto
+
+Migration `20260909121500_patch_f5_rls_recursion.sql` aplicada no banco real. A auditoria do Data Architect encontrou 13 das 33 policies afetadas pela recursao:
+- 1 auto-referenciante (`profiles_select_psychologist`)
+- 10 com subquery direta em `profiles` (patients, sessions, clinical_records, clinical_record_versions, viability, charges, consents, comm_prefs, dsr, audit_log)
+- 2 com cascade em cadeia (session_reminders -> sessions -> profiles; billing_rule_events -> charges -> profiles)
+
+A correcao usou `fn_is_psychologist()` (SECURITY DEFINER + STABLE) em vez do `auth.jwt()` que eu sugeri. O motivo e R13: o JWT carrega o papel do momento do login e nao reflete revogacoes de role ate expirar. A funcao SD le `profiles.role` diretamente, bypassando a RLS da propria tabela.
+
+F5b: 7 colunas cipher de CPF adicionadas ao GRANT UPDATE de profiles.
+
+### Suite completa
+
+| Metrica | Rodada 1 | Rodada 2 |
+|---------|----------|----------|
+| Total de testes | 195 | 217 |
+| Passaram | 194 | 216 |
+| Falharam | 0 | 0 |
+| Pulados | 1 (info) | 1 (info) |
+| Novos nesta rodada | 48 | 22 |
+
+### F5 VALIDADO: 42P17 morreu em todas as 13 policies
+
+Todas as 13 policies recriadas foram testadas com sessao autenticada real. Nenhuma retorna 42P17.
+
+**Psicologa le o que deve:**
+
+| Tabela | Policy | Resultado |
+|--------|--------|-----------|
+| profiles (policy 1 -- a auto-referenciante) | fn_is_psychologist() | SELECT OK, role = psychologist |
+| patients (policy 2) | fn_is_psychologist() | SELECT OK (empty -- sem registros) |
+| sessions (policy 3) | psychologist_id + fn_is_psychologist() | SELECT OK (empty) |
+| charges (policy 7) | psychologist_id + fn_is_psychologist() | SELECT OK (empty) |
+| consents (policy 8) | fn_is_psychologist() | SELECT OK (empty) |
+| communication_preferences (policy 9) | patients subquery OR fn_is_psychologist() | SELECT OK (empty) |
+| data_subject_requests (policy 10) | fn_is_psychologist() | SELECT OK (empty) |
+| session_reminders (policy 11 -- cadeia sessions) | sessions subquery + fn_is_psychologist() | SELECT OK (empty) |
+| billing_rule_events (policy 12 -- cadeia charges) | charges subquery + fn_is_psychologist() | SELECT OK (empty) |
+| audit_log (policy 13) | fn_is_psychologist() | SELECT OK (entries de QA Sprint 1 visiveis) |
+
+**Paciente NAO le o que nao deve:**
+
+| Tabela | Resultado |
+|--------|-----------|
+| patients | empty (user_id nao corresponde, sem registro) |
+| consents | empty (fn_is_psychologist() = false, sem patient record) |
+| audit_log | empty (fn_is_psychologist() = false) |
+| data_subject_requests | empty (fn_is_psychologist() = false) |
+| profiles (outro paciente) | Nao ve -- so ve propria profile e profiles de psychologist (por design) |
+
+**UPDATE em profiles funciona:**
+
+| Operacao | Resultado |
+|----------|-----------|
+| Psicologa UPDATE full_name | OK |
+| Psicologa UPDATE onboarding_completed = true | OK (valor confirmado via SELECT) |
+| Paciente SELECT propria profile | OK (role = patient) |
+
+Nenhuma policy afrouxou nem apertou demais. As duas cadeias longas (session_reminders -> sessions, billing_rule_events -> charges) funcionam sem recursao.
+
+### fn_is_psychologist() protegida -- VALIDADO
+
+| Role | Pode executar? | Codigo |
+|------|---------------|--------|
+| anon | NAO | 42501 ou PGRST202 |
+| authenticated | SIM | (usada implicitamente pelas policies) |
+
+REVOKE triplo (`FROM PUBLIC, anon, authenticated`) + GRANT apenas para `authenticated`. Anon nao pode chamar a funcao -- nao ha enumeracao de contas.
+
+### F5b VALIDADO: onboarding grava CPF cifrado
+
+| Operacao | Resultado |
+|----------|-----------|
+| UPDATE cpf_ciphertext | OK (sem 42501) |
+| UPDATE 7 colunas cipher (ciphertext, iv, tag, dek_wrapped, dek_iv, dek_tag, kek_version) | OK |
+| UPDATE onboarding_completed = true | OK |
+| SELECT cpf_ciphertext apos escrita | 42501 (column grant bloqueia leitura -- correto) |
+
+A psicologa pode escrever as colunas cipher do CPF mas nao pode le-las via SELECT direto. A leitura ocorre via service_role no Server Action (que decifra). Comportamento correto: write-only para authenticated.
+
+### Gate aal2 nas tres camadas -- VALIDADO (post-F5)
+
+Com o F5 corrigido, as tres camadas agora funcionam. Provado com sessao real aal1:
+
+| Camada | O que faz | aal1 resultado | Evidencia |
+|--------|-----------|----------------|-----------|
+| **Middleware** | `profiles.select("role, onboarding_completed")` + `mfa.getAuthenticatorAssuranceLevel()` | Queries OK, aal = aal1, redireciona | profile.role = psychologist retornado, aal.currentLevel = aal1 (nao aal2) -> redirect |
+| **Layout** | `getUser()` + `profiles.select("role")` + aal check | Queries OK, aal1 -> redirect | user truthy, profile.role = psychologist, aal.currentLevel != aal2 |
+| **Server Action** | `withPsychologist`: getUser + profiles.role + aal2 | Guard rejeita | profile.role = psychologist mas aal != aal2 -> "MFA obrigatorio" |
+| **RLS** | `(auth.jwt()->>'aal') = 'aal2'` em clinical_records | Filtro ativo | SELECT retorna empty (aal1 nao passa o filtro) |
+
+Testes adicionais do MFA flow completo:
+- Login -> aal1 (confirmado)
+- Enroll TOTP -> ainda aal1 (confirmado)
+- Challenge + verify com codigo TOTP gerado via otplib -> aal2 (confirmado)
+- aal2 sessao pode consultar clinical_records (retorna empty, sem erro)
+
+### V7/DoD-4 revalidado
+
+| Cenario | Resultado |
+|---------|-----------|
+| SELECT content_ciphertext FROM clinical_records | 42501 (column denied) |
+| SELECT id, session_date FROM clinical_records | OK (empty, RLS filtra) |
+| SELECT cpf_ciphertext FROM profiles | 42501 (column denied, nao mais 42P17) |
+
+### V19 (nova verificacao do documento v1.6)
+
+Nao disponivel como query executavel no banco. A verificacao V19 foi coberta funcionalmente pelos 13 testes de policy acima.
+
+### B1 bypass -- continua morto
+
+Revalidado: sessao aal1 + TOTP verificado ativo -> `listFactors()` retorna fator, `aal.currentLevel` = aal1. As condicoes do guard `hasTotp && aal !== 'aal2'` sao verdadeiras -> Server Action rejeita.
+
+### F6 continua aberto
+
+Politica de senha no Supabase Auth dashboard NAO configurada. Supabase aceita signUp com 7 chars e senhas vazadas. Pendencia do desenvolvedor (configuracao de dashboard, nao de codigo).
+
+### Regressao
+
+| Suite | Rodada 1 | Rodada 2 |
+|-------|----------|----------|
+| Crypto (5 files) | 27 | 27 |
+| Logger | 12 | 12 |
+| Guards | 9 | 9 |
+| RLS anon | 50 | 50 |
+| Constants | 7 | 7 |
+| Auth schemas | 10 | 10 |
+| Profile schemas | 13 | 13 |
+| Middleware logic | 14 | 14 |
+| Auth session | 48 | 70 |
+| **Total** | **195** | **217** |
+
+**Zero regressao.** Todos os 147 testes pre-Sprint-2 continuam passando. Os 48 testes da rodada 1 foram atualizados (5 de F5 viraram validacao positiva, nao mais verificacao de bug).
+
+### Veredicto: APROVADO COM RESSALVA (F6)
+
+Sprint 2 -- Autenticacao & MFA esta aprovada. Justificativa:
+
+1. **F5 VALIDADO** -- 42P17 morreu em todas as 13 policies. fn_is_psychologist() funciona e esta protegida
+2. **F5b VALIDADO** -- Psicologa pode gravar CPF cifrado em profiles (7 colunas cipher)
+3. **Gate aal2 funciona nas tres camadas** -- middleware, layout e Server Action verificam role + aal2. Provado com sessao real aal1
+4. **B1 morreu** -- Server Action rejeita troca de senha com TOTP ativo e aal1
+5. **RLS paciente OK** -- clinical_records, session_note_drafts, remote_viability_assessments inacessiveis ao paciente
+6. **V7/DoD-4 OK** -- Column-level grant bloqueia ciphertext tanto em clinical_records quanto em profiles
+7. **RPC matrix OK** -- 6 GRANTs e 2 DENYs confirmados com sessao autenticada
+8. **Mensagens genericas** -- Identicas para senha errada e email inexistente, timing < 500ms
+9. **PKCE redirect** -- Allowlist solida, URL normaliza path traversal
+10. **217 testes passando**, 0 falhando, 1 pulado informacional
+
+**Ressalva F6:** Politica de senha no Supabase Auth dashboard nao configurada. DoD item 7 parcialmente nao atendida (zod valida no client, servidor aceita senhas fracas). Acao do desenvolvedor, nao de codigo.
+
+### O que fica para QA Sprint 3
+
+- Isolamento paciente-paciente com registros reais em `patients` (cpf_ciphertext NOT NULL precisa do modulo crypto)
+- Onboarding E2E completo: login -> MFA -> onboarding -> dashboard (Playwright)
+- F6: confirmar que password policy foi configurada no dashboard

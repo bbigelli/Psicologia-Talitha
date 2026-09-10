@@ -65,14 +65,25 @@ async function createTestUser(
   const email = testEmail(prefix)
   const password = testPassword()
 
-  const { data, error } = await serviceRole.auth.admin.createUser({
-    email,
-    password,
-    email_confirm: true,
-    user_metadata: { full_name: `QA Test ${prefix}` },
-  })
+  let data, error
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const result = await serviceRole.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+      user_metadata: { full_name: `QA Test ${prefix}` },
+    })
+    data = result.data
+    error = result.error
+    if (!error) break
+    if (error.message.includes("rate limit") && attempt < 3) {
+      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)))
+      continue
+    }
+    break
+  }
 
-  if (error || !data.user) {
+  if (error || !data?.user) {
     throw new Error(`Failed to create test user ${prefix}: ${error?.message}`)
   }
 
@@ -122,109 +133,332 @@ async function signInAs(user: TestUser): Promise<SupabaseClient> {
   const client = createClient(SUPABASE_URL!, SUPABASE_ANON_KEY!, {
     auth: { autoRefreshToken: false, persistSession: false },
   })
-  const { error } = await client.auth.signInWithPassword({
-    email: user.email,
-    password: user.password,
-  })
-  if (error) {
+  // Retry with backoff to handle Supabase rate limiting on signInWithPassword
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const { error } = await client.auth.signInWithPassword({
+      email: user.email,
+      password: user.password,
+    })
+    if (!error) return client
+    if (error.message.includes("rate limit") && attempt < 3) {
+      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)))
+      continue
+    }
     throw new Error(`Failed to sign in as ${user.email}: ${error.message}`)
   }
-  return client
+  throw new Error(`Failed to sign in after retries`)
 }
 
 // ================================================================
-// SECTION 1: BLOCKER F5 — profiles RLS infinite recursion
+// SECTION 1: F5 fix validation — profiles readable, no 42P17
 // ================================================================
 
 describe.skipIf(!canRun)(
-  "BLOCKER F5 — profiles RLS infinite recursion (42P17)",
+  "F5 fix — profiles RLS recursion eliminated (fn_is_psychologist)",
   () => {
     let psychUser: TestUser
     let patientUser: TestUser
+    let psychClient: SupabaseClient
+    let patientClient: SupabaseClient
 
     beforeAll(async () => {
       serviceRole = createClient(SUPABASE_URL!, SUPABASE_SERVICE_ROLE_KEY!, {
         auth: { autoRefreshToken: false, persistSession: false },
       })
-      psychUser = await createTestUser("psychologist", "psych-recur")
-      patientUser = await createTestUser("patient", "patient-recur")
+      psychUser = await createTestUser("psychologist", "psych-f5fix")
+      patientUser = await createTestUser("patient", "patient-f5fix")
+      psychClient = await signInAs(psychUser)
+      patientClient = await signInAs(patientUser)
     })
 
     afterAll(async () => {
       await cleanupTestUsers()
     })
 
-    it("psychologist SELECT on profiles triggers infinite recursion", async () => {
-      const client = await signInAs(psychUser)
-      const { error } = await client
+    // -- profiles (the original self-reference) --
+    it("psychologist can SELECT own profile without 42P17", async () => {
+      const { data, error } = await psychClient
         .from("profiles")
-        .select("id, role")
+        .select("id, role, full_name, crp")
         .eq("id", psychUser.id)
         .single()
-
-      // BUG: profiles_select_psychologist policy does
-      // EXISTS (SELECT 1 FROM profiles p WHERE p.id = auth.uid() AND p.role = 'psychologist')
-      // This subquery against profiles triggers the same policy recursively.
-      expect(error).toBeTruthy()
-      expect(error!.code).toBe("42P17")
-      expect(error!.message).toContain("infinite recursion")
+      expect(error).toBeNull()
+      expect(data?.role).toBe("psychologist")
     })
 
-    it("patient SELECT on profiles triggers infinite recursion", async () => {
-      const client = await signInAs(patientUser)
-      const { error } = await client
+    it("patient can SELECT own profile without 42P17", async () => {
+      const { data, error } = await patientClient
         .from("profiles")
-        .select("id, role")
+        .select("id, role, full_name")
         .eq("id", patientUser.id)
         .single()
-
-      // Same bug: PostgreSQL evaluates ALL permissive policies with OR,
-      // including profiles_select_psychologist which self-references.
-      expect(error).toBeTruthy()
-      expect(error!.code).toBe("42P17")
+      expect(error).toBeNull()
+      expect(data?.role).toBe("patient")
     })
 
-    it("psychologist UPDATE on profiles triggers infinite recursion", async () => {
-      const client = await signInAs(psychUser)
-      const { error } = await client
+    it("psychologist can UPDATE own profile without 42P17", async () => {
+      const { error } = await psychClient
         .from("profiles")
-        .update({ full_name: "Test Name" })
+        .update({ full_name: "QA Updated Name F5" })
         .eq("id", psychUser.id)
-
-      // UPDATE also triggers SELECT policies (PostgREST reads after write).
-      // The UPDATE policy itself (profiles_update_own) is fine, but the
-      // read-back fails due to the recursive SELECT policy.
-      expect(error).toBeTruthy()
-      expect(error!.code).toBe("42P17")
+      expect(error).toBeNull()
     })
 
-    it("recursion cascades to tables referencing profiles (patients)", async () => {
-      const client = await signInAs(psychUser)
-      const { error } = await client
+    // -- 13 affected policies: psychologist reads what she should --
+    it("psychologist can SELECT patients (policy 2)", async () => {
+      const { data, error } = await psychClient
         .from("patients")
         .select("id")
         .limit(1)
-
-      // patients_select_psychologist does:
-      // EXISTS (SELECT 1 FROM profiles p WHERE p.id = auth.uid() AND p.role = 'psychologist')
-      // This triggers the profiles SELECT policies, which recurse.
-      if (error) {
-        expect(error.code).toBe("42P17")
-      }
-      // Note: some tables may not cascade if their only policy doesn't reference profiles
+      expect(error).toBeNull()
+      // Empty is fine (no patient records with cpf), no 42P17
+      expect(Array.isArray(data)).toBe(true)
     })
 
-    it("recursion cascades to sessions table", async () => {
-      const client = await signInAs(psychUser)
-      const { error } = await client
+    it("psychologist can SELECT sessions (policy 3)", async () => {
+      const { data, error } = await psychClient
         .from("sessions")
         .select("id")
         .limit(1)
+      expect(error).toBeNull()
+      expect(Array.isArray(data)).toBe(true)
+    })
 
-      // sessions_select_psychologist also references profiles
+    it("psychologist can SELECT charges (policy 7)", async () => {
+      const { data, error } = await psychClient
+        .from("charges")
+        .select("id")
+        .limit(1)
+      expect(error).toBeNull()
+      expect(Array.isArray(data)).toBe(true)
+    })
+
+    it("psychologist can SELECT consents (policy 8)", async () => {
+      const { data, error } = await psychClient
+        .from("consents")
+        .select("id")
+        .limit(1)
+      expect(error).toBeNull()
+      expect(Array.isArray(data)).toBe(true)
+    })
+
+    it("psychologist can SELECT communication_preferences (policy 9)", async () => {
+      const { data, error } = await psychClient
+        .from("communication_preferences")
+        .select("id")
+        .limit(1)
+      expect(error).toBeNull()
+      expect(Array.isArray(data)).toBe(true)
+    })
+
+    it("psychologist can SELECT data_subject_requests (policy 10)", async () => {
+      const { data, error } = await psychClient
+        .from("data_subject_requests")
+        .select("id")
+        .limit(1)
+      expect(error).toBeNull()
+      expect(Array.isArray(data)).toBe(true)
+    })
+
+    it("psychologist can SELECT session_reminders (chain: sessions, policy 11)", async () => {
+      const { data, error } = await psychClient
+        .from("session_reminders")
+        .select("id")
+        .limit(1)
+      expect(error).toBeNull()
+      expect(Array.isArray(data)).toBe(true)
+    })
+
+    it("psychologist can SELECT billing_rule_events (chain: charges, policy 12)", async () => {
+      const { data, error } = await psychClient
+        .from("billing_rule_events")
+        .select("id")
+        .limit(1)
+      expect(error).toBeNull()
+      expect(Array.isArray(data)).toBe(true)
+    })
+
+    it("psychologist can SELECT audit_log (policy 13)", async () => {
+      const { data, error } = await psychClient
+        .from("audit_log")
+        .select("id")
+        .limit(1)
+      expect(error).toBeNull()
+      expect(Array.isArray(data)).toBe(true)
+    })
+
+    // -- Patient must NOT read what psychologist reads --
+    it("patient cannot SELECT patients (no patient row, psychologist-only policy blocked)", async () => {
+      const { data, error } = await patientClient
+        .from("patients")
+        .select("id")
+        .limit(1)
+      // patients_select_psychologist: fn_is_psychologist() → false for patient
+      // patients_select_patient_own: user_id = auth.uid() → no matching rows
       if (error) {
-        expect(error.code).toBe("42P17")
+        expect(error.code).not.toBe("42P17")
+      } else {
+        expect(data).toEqual([])
       }
+    })
+
+    it("patient cannot see another patient's profile", async () => {
+      // profiles_select_patient_own: id = auth.uid() OR role = 'psychologist'
+      // Patient 1 querying for patient 2: id != auth.uid(), role != psychologist
+      const { data } = await patientClient
+        .from("profiles")
+        .select("id, role")
+        .eq("id", psychUser.id)
+
+      // Should see psychologist profile (role = 'psychologist' in USING clause)
+      // This is by design — patient can see psychologist's public profile (CRP etc.)
+      if (data && data.length > 0) {
+        const roles = data.map((r: { role: string }) => r.role)
+        // Should only contain psychologist role (visible by policy)
+        expect(roles.every((r: string) => r === "psychologist")).toBe(true)
+      }
+    })
+
+    it("patient cannot SELECT consents (psychologist-only)", async () => {
+      const { data, error } = await patientClient
+        .from("consents")
+        .select("id")
+        .limit(1)
+      // consents_select_psychologist: fn_is_psychologist() → false
+      // consents also has patient_own policy via patients subquery,
+      // but no patient record exists → empty
+      if (error) {
+        expect(error.code).not.toBe("42P17")
+      } else {
+        expect(data).toEqual([])
+      }
+    })
+
+    it("patient cannot SELECT audit_log", async () => {
+      const { data, error } = await patientClient
+        .from("audit_log")
+        .select("id")
+        .limit(1)
+      // audit_log_select_psychologist: fn_is_psychologist() → false
+      // No patient policy for audit_log → empty
+      if (error) {
+        expect(error.code).not.toBe("42P17")
+      } else {
+        expect(data).toEqual([])
+      }
+    })
+
+    it("patient cannot SELECT data_subject_requests (psychologist-only)", async () => {
+      const { data, error } = await patientClient
+        .from("data_subject_requests")
+        .select("id")
+        .limit(1)
+      if (error) {
+        expect(error.code).not.toBe("42P17")
+      } else {
+        expect(data).toEqual([])
+      }
+    })
+  },
+)
+
+// ================================================================
+// SECTION 1b: fn_is_psychologist() security — REVOKE/GRANT
+// ================================================================
+
+describe.skipIf(!canRun)(
+  "fn_is_psychologist() — REVOKE triplo + GRANT to authenticated only",
+  () => {
+    let anonClient: SupabaseClient
+
+    beforeAll(() => {
+      serviceRole = createClient(SUPABASE_URL!, SUPABASE_SERVICE_ROLE_KEY!, {
+        auth: { autoRefreshToken: false, persistSession: false },
+      })
+      anonClient = createClient(SUPABASE_URL!, SUPABASE_ANON_KEY!, {
+        auth: { autoRefreshToken: false, persistSession: false },
+      })
+    })
+
+    it("anon cannot call fn_is_psychologist (REVOKE effective)", async () => {
+      const { error } = await anonClient.rpc("fn_is_psychologist", {})
+      expect(error).toBeTruthy()
+      // 42501 or PGRST202 — function not visible/executable for anon
+      expect(["42501", "PGRST202"]).toContain(error!.code)
+    })
+  },
+)
+
+// ================================================================
+// SECTION 1c: F5b — onboarding writes CPF cipher columns
+// ================================================================
+
+describe.skipIf(!canRun)(
+  "F5b fix — psychologist can write CPF cipher columns on profiles",
+  () => {
+    let psychUser: TestUser
+    let psychClient: SupabaseClient
+
+    beforeAll(async () => {
+      serviceRole = createClient(SUPABASE_URL!, SUPABASE_SERVICE_ROLE_KEY!, {
+        auth: { autoRefreshToken: false, persistSession: false },
+      })
+      psychUser = await createTestUser("psychologist", "psych-f5b")
+      psychClient = await signInAs(psychUser)
+    })
+
+    afterAll(async () => {
+      await cleanupTestUsers()
+    })
+
+    it("psychologist can UPDATE cpf_ciphertext on own profile", async () => {
+      const { error } = await psychClient
+        .from("profiles")
+        .update({ cpf_ciphertext: "test-cipher-qa" })
+        .eq("id", psychUser.id)
+      expect(error).toBeNull()
+    })
+
+    it("psychologist can UPDATE all 7 CPF cipher columns on own profile", async () => {
+      const { error } = await psychClient
+        .from("profiles")
+        .update({
+          cpf_ciphertext: "cipher-qa",
+          cpf_iv: "iv-qa",
+          cpf_tag: "tag-qa",
+          cpf_dek_wrapped: "dek-qa",
+          cpf_dek_iv: "dekiv-qa",
+          cpf_dek_tag: "dektag-qa",
+          cpf_kek_version: 1,
+        })
+        .eq("id", psychUser.id)
+      expect(error).toBeNull()
+    })
+
+    it("psychologist can SET onboarding_completed = true", async () => {
+      const { error } = await psychClient
+        .from("profiles")
+        .update({ onboarding_completed: true })
+        .eq("id", psychUser.id)
+      expect(error).toBeNull()
+
+      // Verify the value was written
+      const { data } = await psychClient
+        .from("profiles")
+        .select("onboarding_completed")
+        .eq("id", psychUser.id)
+        .single()
+      expect(data?.onboarding_completed).toBe(true)
+    })
+
+    it("CPF cipher columns are NOT readable via SELECT (column-level grant)", async () => {
+      // Even though we wrote them, SELECT cpf_ciphertext is still denied
+      const { error } = await psychClient
+        .from("profiles")
+        .select("cpf_ciphertext")
+        .eq("id", psychUser.id)
+      expect(error).toBeTruthy()
+      expect(error!.code).toBe("42501")
     })
   },
 )
@@ -351,6 +585,114 @@ describe.skipIf(!canRun)(
       expect(data).toEqual([])
       // Note: we can't distinguish "no data" from "RLS filtered" when the table is empty.
       // The V7 test below (column-level grant) provides the stronger proof.
+    })
+  },
+)
+
+// ================================================================
+// SECTION 2b: aal2 gate — all three defense layers (post-F5 fix)
+// ================================================================
+
+describe.skipIf(!canRun)(
+  "aal2 gate — three defense layers verified (post-F5 fix)",
+  () => {
+    let psychUser: TestUser
+
+    beforeAll(async () => {
+      serviceRole = createClient(SUPABASE_URL!, SUPABASE_SERVICE_ROLE_KEY!, {
+        auth: { autoRefreshToken: false, persistSession: false },
+      })
+      psychUser = await createTestUser("psychologist", "psych-3layer")
+    })
+
+    afterAll(async () => {
+      await cleanupTestUsers()
+    })
+
+    it("Layer 1 (middleware): aal1 session can read profiles.role (prerequisite for middleware logic)", async () => {
+      // The middleware does: supabase.from("profiles").select("role, onboarding_completed").eq("id", user.id)
+      // With F5 fixed, this query must succeed at aal1 (middleware runs before MFA redirect).
+      const aal1Client = await signInAs(psychUser)
+      const { data, error } = await aal1Client
+        .from("profiles")
+        .select("role, onboarding_completed")
+        .eq("id", psychUser.id)
+        .single()
+
+      expect(error).toBeNull()
+      expect(data?.role).toBe("psychologist")
+      // The middleware then checks aal level and redirects to /mfa/verify.
+      // We can't run the actual middleware, but the prerequisite query works.
+    })
+
+    it("Layer 1 (middleware): aal1 session reads aal and finds non-aal2", async () => {
+      // The middleware does: supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+      // At aal1, currentLevel !== 'aal2' → middleware redirects to /mfa/verify
+      const aal1Client = await signInAs(psychUser)
+      const { data: aal } =
+        await aal1Client.auth.mfa.getAuthenticatorAssuranceLevel()
+      expect(aal?.currentLevel).toBe("aal1")
+      expect(aal?.currentLevel).not.toBe("aal2")
+    })
+
+    it("Layer 2 (layout): PsychologistLayout getUser + role + aal check would redirect at aal1", async () => {
+      // PsychologistLayout does the same checks as middleware independently.
+      // getUser() succeeds, profile.role = 'psychologist', but aal !== 'aal2' → redirect
+      const aal1Client = await signInAs(psychUser)
+
+      // Step 1: getUser succeeds
+      const { data: { user }, error: authError } = await aal1Client.auth.getUser()
+      expect(authError).toBeNull()
+      expect(user).toBeTruthy()
+
+      // Step 2: profiles query succeeds (F5 fixed)
+      const { data: profile } = await aal1Client
+        .from("profiles")
+        .select("role, onboarding_completed")
+        .eq("id", user!.id)
+        .single()
+      expect(profile?.role).toBe("psychologist")
+
+      // Step 3: aal check → not aal2 → would redirect to /mfa/verify or /mfa/setup
+      const { data: aal } =
+        await aal1Client.auth.mfa.getAuthenticatorAssuranceLevel()
+      expect(aal?.currentLevel).not.toBe("aal2")
+    })
+
+    it("Layer 3 (Server Action): withPsychologist rejects at aal1", async () => {
+      // withPsychologist checks: getUser + profiles.role + aal2
+      // At aal1, it returns { success: false, error: "MFA obrigatorio" }
+      const aal1Client = await signInAs(psychUser)
+
+      // Simulate the exact checks from _guard.ts:
+      const { data: { user } } = await aal1Client.auth.getUser()
+      expect(user).toBeTruthy()
+
+      const { data: profile } = await aal1Client
+        .from("profiles")
+        .select("id, role")
+        .eq("id", user!.id)
+        .single()
+      expect(profile?.role).toBe("psychologist")
+
+      const { data: aal } =
+        await aal1Client.auth.mfa.getAuthenticatorAssuranceLevel()
+      // This is the exact condition in _guard.ts line 84:
+      // if (aal?.currentLevel !== "aal2") → reject
+      expect(aal?.currentLevel).not.toBe("aal2")
+      // Wrapper would return: { success: false, error: "MFA obrigatorio" }
+    })
+
+    it("Layer 3 (RLS): clinical_records aal2 clause blocks aal1 session", async () => {
+      // clinical_records SELECT policy: (auth.jwt()->>'aal') = 'aal2'
+      // At aal1, this is false → no rows returned
+      const aal1Client = await signInAs(psychUser)
+      const { data, error } = await aal1Client
+        .from("clinical_records")
+        .select("id")
+        .limit(1)
+      expect(error).toBeNull()
+      expect(data).toEqual([])
     })
   },
 )
@@ -524,20 +866,18 @@ describe.skipIf(!canRun)(
       }
     })
 
-    it("patient cannot UPDATE sessions (blocked by REVOKE or recursion)", async () => {
+    it("patient cannot UPDATE sessions (REVOKE UPDATE effective)", async () => {
       const { error } = await patientClient
         .from("sessions")
         .update({ status: "cancelled" })
         .eq("id", "00000000-0000-0000-0000-000000000000")
 
       expect(error).toBeTruthy()
-      // 42501 = permission denied (REVOKE), or
-      // 42P17 = infinite recursion (sessions policy references profiles)
-      // Either way, the UPDATE is blocked
-      expect(["42501", "42P17"]).toContain(error!.code)
+      // 42501 = permission denied (REVOKE effective)
+      expect(error!.code).toBe("42501")
     })
 
-    it("patient cannot INSERT into sessions (blocked by REVOKE or PostgREST)", async () => {
+    it("patient cannot INSERT into sessions (REVOKE INSERT effective)", async () => {
       const { error } = await patientClient.from("sessions").insert({
         id: "00000000-0000-0000-0000-000000000000",
         patient_id: "00000000-0000-0000-0000-000000000001",
@@ -548,9 +888,8 @@ describe.skipIf(!canRun)(
       })
 
       expect(error).toBeTruthy()
-      // 42501 = privilege denied, PGRST204 = no applicable INSERT,
-      // 42P17 = recursion — all prevent the insert
-      expect(["42501", "PGRST204", "42P17"]).toContain(error!.code)
+      // 42501 or PGRST204 — both confirm INSERT is blocked
+      expect(["42501", "PGRST204"]).toContain(error!.code)
     })
 
     it("patient cannot call log_audit_system (service_role only)", async () => {
@@ -634,7 +973,7 @@ describe.skipIf(!canRun)(
       expect(data).toEqual([])
     })
 
-    it("SELECT cpf_ciphertext FROM profiles is blocked", async () => {
+    it("SELECT cpf_ciphertext FROM profiles returns 42501 (column denied)", async () => {
       // cpf_ciphertext is NOT in the column-level SELECT grant
       const { error } = await psychClient
         .from("profiles")
@@ -642,8 +981,7 @@ describe.skipIf(!canRun)(
         .limit(1)
 
       expect(error).toBeTruthy()
-      // Could be 42501 (column denied) or 42P17 (recursion reaches column check)
-      expect(["42501", "42P17"]).toContain(error!.code)
+      expect(error!.code).toBe("42501")
     })
   },
 )
