@@ -43,6 +43,17 @@ export type AcceptMultipleConsentsInput = z.infer<
   typeof acceptMultipleConsentsSchema
 >
 
+export const revokeConsentSchema = z.object({
+  purpose: z.enum([
+    "online_therapy",
+    "lgpd_clinical",
+    "lgpd_asaas",
+    "communication",
+  ]),
+})
+
+export type RevokeConsentInput = z.infer<typeof revokeConsentSchema>
+
 /**
  * Schema for invite acceptance (password creation).
  */

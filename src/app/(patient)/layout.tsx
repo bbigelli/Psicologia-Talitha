@@ -37,7 +37,10 @@ export default async function PatientLayout({
     redirect("/login")
   }
 
-  // Defense-in-depth: verify consent status
+  // Defense-in-depth: verify consent status at current version.
+  // Keep CURRENT_VERSION in sync with @/schemas/consent.ts.
+  const CURRENT_VERSION = "1.0"
+
   const { data: patient } = await supabase
     .from("patients")
     .select("id")
@@ -49,23 +52,33 @@ export default async function PatientLayout({
 
     const { data: consents } = await supabase
       .from("consents")
-      .select("purpose, action, occurred_at")
+      .select("purpose, action, consent_version, occurred_at")
       .eq("patient_id", patient.id)
       .in("purpose", requiredPurposes)
       .order("occurred_at", { ascending: false })
 
-    const latestByPurpose = new Map<string, string>()
+    const latestByPurpose = new Map<
+      string,
+      { action: string; version: string }
+    >()
     if (consents) {
       for (const c of consents) {
         if (!latestByPurpose.has(c.purpose)) {
-          latestByPurpose.set(c.purpose, c.action)
+          latestByPurpose.set(c.purpose, {
+            action: c.action,
+            version: c.consent_version,
+          })
         }
       }
     }
 
-    const allAccepted = requiredPurposes.every(
-      (p) => latestByPurpose.get(p) === "accept",
-    )
+    const allAccepted = requiredPurposes.every((p) => {
+      const latest = latestByPurpose.get(p)
+      return (
+        latest?.action === "accept" &&
+        latest?.version === CURRENT_VERSION
+      )
+    })
 
     if (!allAccepted) {
       redirect("/termos/atendimento")

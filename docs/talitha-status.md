@@ -100,8 +100,11 @@
 - Patient layout: atualizado com consent check (defense-in-depth)
 - Build: PASSA (19 rotas)
 - TypeScript: PASSA (zero erros)
-- Testes: 317 total (316 passando, 1 pulado) -- SEM REGRESSAO (QA 85 + roundtrip 6)
+- Testes: 324 total (323 passando, 1 pulado) -- SEM REGRESSAO
 - Resend SDK instalado (v4)
+- Code Review: W1 (version check) e W2 (zod parse) CORRIGIDOS
+- Suggestions aplicadas: S1 (acessibilidade scroll), S2 (audit label), S5 (tipo envelopeToBytea)
+- Suggestions recusadas: S3 (documentacao Architect, nao codigo), S4 (date helpers, motivo abaixo)
 
 ### Decisoes tomadas pelo agente (sem perguntar ao dev)
 - Usado admin client (service_role) para INSERT em patients e email_action_tokens (alternativa: RPC nova). Motivo: patients nao tem GRANT INSERT para authenticated; admin.ts ja esta no allowlist do projeto; a autorizacao e feita dentro do wrapper withPsychologist
@@ -150,13 +153,13 @@
   - Hex SEM prefixo -> decrypt FALHA (prova do bug)
 
 ### Code Review Sprint 3: REPROVADO (0B 2W 5S) -- docs/talitha-review-sprint-3.md
-- **W1:** hasActiveConsents, middleware e patient layout NAO verificam consent_version contra CURRENT_CONSENT_VERSION. Re-aceite apos bump de versao nao e enforced
-- **W2:** acceptConsent, acceptMultipleConsents e revokeConsent NAO chamam .parse() com os schemas zod existentes. Validacao em runtime ausente na boundary
-- S1: ConsentSection scroll container nao e keyboard-focusable
-- S2: acceptInvite audit log action label errado ("ACCEPT_CONSENT" em vez de "ACCEPT_INVITE")
-- S3: admin client allowlist na architecture.md nao menciona consumo de convite
-- S4: date formatting helpers duplicados
-- S5: envelopeToBytea retorna tipo generico (Record)
+- **W1 CORRIGIDO:** consent_version agora verificado em hasActiveConsents, middleware e patient layout. Re-aceite enforced quando CURRENT_CONSENT_VERSION muda. 7 testes unitarios adicionados
+- **W2 CORRIGIDO:** acceptConsentSchema.parse(), acceptMultipleConsentsSchema.parse() e revokeConsentSchema.parse() adicionados nas 3 actions. Schema revokeConsentSchema criado
+- **S1 APLICADA:** tabIndex={0}, role="region", aria-label no scroll container
+- **S2 APLICADA:** audit label corrigido para "ACCEPT_INVITE"
+- S3 NAO APLICADA: sugestao de documentacao para o Architect, nao codigo
+- **S4 RECUSADA:** as duas funcoes formatDate tem outputs diferentes (weekday longo vs curto); merge adicionaria parametro sem ganho de simplicidade. Extrair para lib/date-format.ts se pattern crescer
+- **S5 APLICADA:** envelopeToBytea retorna tipo generico parametrizado por prefix (template literal types)
 - Decisoes avaliadas: acceptInvite sem wrapper (saudavel), createPatient com admin (adequado), hashes com teste CI (protegido)
 
 ### Pendencias tecnicas acumuladas
@@ -167,9 +170,9 @@
 - S7 (Sprint 2): x-forwarded-for trust rule ausente
 - S10 (Sprint 2): Considerar wrapper withAuthenticatedUser
 - S11 (Sprint 2): eslint error em MfaSetup.tsx
-- EMAIL_FROM e RESEND_API_KEY_APP nao adicionados ao .env.example
+- EMAIL_FROM, RESEND_API_KEY_APP, RESEND_API_KEY_CRON ja estavam no .env.example (confirmado pelo coordenador)
 - W1 (QA Sprint 3): unused imports na Sprint 3
-- S1-S5 (CR Sprint 3): ver docs/talitha-review-sprint-3.md
+- S3 (CR Sprint 3): documentar consumo de convite na allowlist do Architect
 
 ### Proximo passo
-Stack agent corrige W1 e W2 do Code Review Sprint 3. Apos correcao, Code Review roda novamente.
+W1 e W2 do Code Review corrigidos. Code Review roda novamente para aprovar Sprint 3.

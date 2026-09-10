@@ -172,8 +172,8 @@ export async function middleware(request: NextRequest) {
       return NextResponse.redirect(new URL("/portal", request.url))
     }
 
-    // Consent check — patient must accept required consents before portal access
-    // Terms routes are always accessible (that's where they accept)
+    // Consent check — patient must accept required consents at CURRENT version
+    // Terms routes are always accessible (that's where they accept/re-accept)
     if (!pathname.startsWith("/termos")) {
       // Look up patient record and check for active consents
       const { data: patient } = await supabase
@@ -189,26 +189,42 @@ export async function middleware(request: NextRequest) {
           "lgpd_asaas",
         ]
 
+        // CURRENT_CONSENT_VERSION is imported inline to avoid adding
+        // a module dependency to middleware (which runs on every request).
+        // Keep in sync with @/schemas/consent.ts CURRENT_CONSENT_VERSION.
+        const CURRENT_VERSION = "1.0"
+
         const { data: consents } = await supabase
           .from("consents")
-          .select("purpose, action, occurred_at")
+          .select("purpose, action, consent_version, occurred_at")
           .eq("patient_id", patient.id)
           .in("purpose", requiredPurposes)
           .order("occurred_at", { ascending: false })
 
-        // Get latest action per purpose
-        const latestByPurpose = new Map<string, string>()
+        // Get latest record per purpose
+        const latestByPurpose = new Map<
+          string,
+          { action: string; version: string }
+        >()
         if (consents) {
           for (const c of consents) {
             if (!latestByPurpose.has(c.purpose)) {
-              latestByPurpose.set(c.purpose, c.action)
+              latestByPurpose.set(c.purpose, {
+                action: c.action,
+                version: c.consent_version,
+              })
             }
           }
         }
 
-        const allAccepted = requiredPurposes.every(
-          (p) => latestByPurpose.get(p) === "accept",
-        )
+        // All required: latest action = 'accept' AND version = current
+        const allAccepted = requiredPurposes.every((p) => {
+          const latest = latestByPurpose.get(p)
+          return (
+            latest?.action === "accept" &&
+            latest?.version === CURRENT_VERSION
+          )
+        })
 
         if (!allAccepted) {
           return NextResponse.redirect(

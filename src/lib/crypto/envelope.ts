@@ -166,13 +166,27 @@ export function hexToBytea(hex: string): string {
 /**
  * Convert all envelope fields to BYTEA-safe format for Supabase insert/update.
  *
- * Returns an object with the same field names used by the database columns,
+ * Returns an object keyed by `{prefix}_{field}` matching database column names,
  * ready to spread into an insert/update call.
+ *
+ * Example: envelopeToBytea(envelope, "cpf") produces
+ *   { cpf_ciphertext: "\\x...", cpf_iv: "\\x...", ..., cpf_kek_version: 1 }
  */
-export function envelopeToBytea(
+export function envelopeToBytea<P extends string>(
   envelope: EncryptedEnvelope,
-  prefix: string,
-): Record<string, string | number> {
+  prefix: P,
+): Record<
+  | `${P}_ciphertext`
+  | `${P}_iv`
+  | `${P}_tag`
+  | `${P}_dek_wrapped`
+  | `${P}_dek_iv`
+  | `${P}_dek_tag`
+  | `${P}_kek_version`,
+  string | number
+> {
+  // Assertion justified: the computed keys match the return type 1:1.
+  // TypeScript cannot narrow computed property names to template literal types.
   return {
     [`${prefix}_ciphertext`]: hexToBytea(envelope.contentCiphertext),
     [`${prefix}_iv`]: hexToBytea(envelope.contentIv),
@@ -181,5 +195,5 @@ export function envelopeToBytea(
     [`${prefix}_dek_iv`]: hexToBytea(envelope.dekIv),
     [`${prefix}_dek_tag`]: hexToBytea(envelope.dekTag),
     [`${prefix}_kek_version`]: envelope.kekVersion,
-  }
+  } as ReturnType<typeof envelopeToBytea<P>>
 }

@@ -58,7 +58,12 @@ export function ConsentSection({
         </h3>
       </div>
 
-      <div className="max-h-[300px] overflow-y-auto rounded bg-muted/30 p-3 text-sm leading-relaxed text-foreground/80">
+      <div
+        className="max-h-[300px] overflow-y-auto rounded bg-muted/30 p-3 text-sm leading-relaxed text-foreground/80"
+        tabIndex={0}
+        role="region"
+        aria-label={`Texto do termo: ${title}`}
+      >
         {text.split("\n").map((line, i) => (
           <p key={i} className={line.trim() === "" ? "h-3" : ""}>
             {line}

@@ -258,7 +258,7 @@ export async function acceptInvite(
     logInfo({
       event_type: "invite_accepted",
       patient_id: consumed.patient_id,
-      action: "ACCEPT_CONSENT",
+      action: "ACCEPT_INVITE",
     })
 
     return {
