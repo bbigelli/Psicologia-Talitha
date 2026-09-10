@@ -123,3 +123,18 @@ Registro de decisões de produto, arquitetura e técnicas. Ver `~/.claude/CLAUDE
 **PENDENTE — o agendamento.** A function existe e responde, mas **nada a chama**. Sem agendador, os lembretes nunca saem. Duas opções em aberto: `pg_cron` no Supabase (nativo, versionável como migration, sem infra externa) ou cron externo fazendo POST. Decisão do dev.
 **PENDENTE — renovação do token.** O access token **vence em 31 de dezembro**. Depois disso, deploy de Edge Function e `secrets set` param de funcionar até renovar.
 **Escopo:** Infraestrutura de Edge Functions.
+
+### [2026-09-10] Riscos residuais aceitos no retry de lembretes
+**Contexto:** A correção do W3 da Sprint 4 usa `delivery_status` como máquina de estados para reenvio: `failed` com menos de 2h desde a primeira tentativa vira `pending` e reenvia (~8 tentativas com cron de 15 min).
+**Dois riscos residuais aceitos, ambos para revisitar na Sprint 8:**
+1. **`pending` órfão** — se a Edge Function morrer entre marcar `pending` e concluir o envio, a linha fica `pending` para sempre e toda invocação futura pula, achando que outra está tratando. O lembrete nunca sai e nada sinaliza. Mitigação atual: o lembrete de 1h é tipo independente e ainda funciona. Correção sugerida: tratar `pending` com `updated_at` acima de 5 min como abandonado.
+2. **Duplicação** — duas invocações concorrentes que vejam `failed` ao mesmo tempo reenviam as duas, e o paciente recebe dois e-mails. Mitigação atual: cron de 15 min com função terminando em menos de 30s torna sobreposição improvável. Correção sugerida: `UPDATE ... WHERE delivery_status = 'failed' RETURNING *` como claim atômico.
+**Por que aceito:** ambos exigem falha de infraestrutura ou concorrência que a escala de uma profissional solo torna improvável, e a complexidade de resolver agora é desproporcional ao risco.
+**Escopo:** Edge Function `send-reminders`.
+
+### [2026-09-10] E-mail de retry de lembrete sai sem links de ação
+**Contexto:** O token de confirmação/cancelamento existe no banco **apenas como hash** — o valor original não é recuperável para remontar o link.
+**Decisão:** o e-mail de reenvio sai sem os botões de confirmar e cancelar. O paciente age pelo portal.
+**Alternativa descartada:** gerar tokens novos no retry e invalidar os antigos — mais código e mais superfície de erro, para um caso que só ocorre quando o primeiro envio falhou.
+**Consequência aceita:** quem recebe apenas o retry perde a conveniência do "confirmar em um clique", que é parte do que reduz no-show. Revisitar se a taxa de no-show na prática mostrar que importa.
+**Escopo:** Edge Function `send-reminders`.

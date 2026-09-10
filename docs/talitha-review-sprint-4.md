@@ -290,3 +290,116 @@ REPROVADO. 0 blockers + 5 warnings devem ser corrigidos antes de avancar.
 - **W5** (admin client fora da allowlist): Compliance -- architecture.md secao 6.2 diz "reprovacao"
 
 **Suggestions (S1-S6) NAO bloqueiam.** Anotar no status file como pendencias tecnicas.
+
+---
+
+## Re-verificacao (rodada 2)
+
+Stack Agent aplicou correcoes para os 5 warnings. 408 testes passando.
+
+### W1: Late cancellation via email -- FECHADO
+
+**Verificado.** O `throw` apos side effect foi removido. O fluxo agora:
+
+1. Sessao cancelada no banco (linhas 158-168) -- side effect committado
+2. Audit log escrito (linhas 182-192)
+3. **Retorna** `{ action: "cancelled", isLateCancellation: true }` (linha 204) -- sem throw
+
+O `ConfirmAction.tsx` trata o resultado corretamente:
+- `isLateCancellation === true` -> `toast.warning("Compromisso cancelado. Como foi fora do prazo, a sessao podera ser cobrada.", { duration: 8000 })` -- 8 segundos e suficiente para ler
+- Late cancellation sem flag -> `toast.success("Compromisso cancelado com sucesso.")`
+- Confirmacao -> `toast.success("Presenca confirmada com sucesso.")`
+- Em todos os caminhos de sucesso, `router.push("/login")` redireciona
+
+**Auditoria dos throws restantes:** Todos os 5 `throw` restantes no arquivo (linhas 64, 67, 74, 83, 208) acontecem ANTES de qualquer side effect:
+- Linhas 64, 67, 74: dentro do bloco `if (consumeError)` -- o RPC falhou, nenhum dado foi alterado
+- Linha 83: `result` e null -- nenhuma operacao executada
+- Linha 208: dentro do `else` (sessao nao esta em status cancellavel) -- o UPDATE nunca rodou
+
+Zero throws apos side effect. W1 fechado.
+
+### W2: Visao diaria em desktop -- FECHADO
+
+**Verificado.** A correcao removeu os breakpoint classes de dentro dos componentes filhos e centralizou o controle de visibilidade no `ScheduleClient`:
+
+- `DayView.tsx` linha 48: root div agora e `<div className="space-y-3">` -- sem `md:hidden`
+- `WeekView.tsx` linha 51: root div agora e `<div className="overflow-x-auto">` -- sem `hidden md:block`
+- `ScheduleClient.tsx` controla visibilidade com 3 wrappers:
+  - Linha 197: `<div className="hidden md:block">` em volta de WeekView (desktop, semana)
+  - Linha 205: `<div className="hidden md:block">` em volta de DayView (desktop, dia)
+  - Linha 215: `<div className="md:hidden">` em volta de DayView (mobile, sempre)
+
+**Composicao verificada por caso:**
+| Viewport | viewMode=week | viewMode=day |
+|----------|--------------|-------------|
+| Desktop (md+) | WeekView visivel, DayView desktop nao renderizado, DayView mobile oculto | DayView desktop visivel, WeekView nao renderizado, DayView mobile oculto |
+| Mobile (<md) | WeekView oculto, DayView mobile visivel | WeekView nao renderizado, DayView desktop oculto, DayView mobile visivel |
+
+Os 4 quadrantes estao corretos. TSDoc no DayView e WeekView documenta a decisao: "Visibility is controlled by the parent (ScheduleClient), not by this component." W2 fechado.
+
+### W3: Retry de lembretes -- FECHADO (com observacoes de concorrencia)
+
+**Verificado.** O mecanismo de retry (linhas 435-495) implementa a decisao correta:
+
+1. Tenta INSERT. Se sucesso -> reminder novo, prossegue para enviar
+2. Se UNIQUE violation (23505) -> SELECT do registro existente:
+   - `sent` -> pula (ja entregue)
+   - `pending` -> pula (outra invocacao tratando)
+   - `failed` com `created_at` < 2h -> UPDATE para `pending`, marca `isRetry = true`, reenvia
+   - `failed` com `created_at` >= 2h -> pula (falha provavelmente permanente)
+
+**Janela de 2h:** O `created_at` (linha 479) e a timestamp do INSERT original -- a primeira tentativa. NAO e deslizante. Com cron de 15 min, dao ~8 tentativas em 2h antes de desistir. Teto real e fixo.
+
+**Retry sem links de acao:** O retry envia email sem `confirmUrl`/`cancelUrl` (linha 505: `!isRetry` guarda a geracao de tokens). O email de retry contem: "Ola, [Nome]. Este e um lembrete do seu compromisso de amanha. [data] [hora]." Sem botoes de confirmar/cancelar. Isso e uma **degradacao aceitavel**:
+- O proposito primario do lembrete e anti-no-show -- "lembrar que existe compromisso amanha". Um email com data/hora cumpre isso sem botoes
+- Confirmacao/cancelamento sao funcionalidades de conveniencia; o paciente pode agir pelo portal
+- Gerar novos tokens no retry seria incorreto: os tokens originais ainda existem no banco (o hash foi persistido), e gerar novos criaria tokens duplicados para a mesma sessao/purpose
+- A alternativa (nao reenviar nada) e pior -- o paciente nao recebe nenhum lembrete
+
+**Analise de concorrencia -- dois riscos residuais (nenhum bloqueia):**
+
+**Risco 1: `pending` orfao.** Se a Edge Function crash/timeout entre o UPDATE para `pending` (linha 488-492) e a conclusao do envio, o registro fica `pending` permanentemente. Invocacoes futuras veem `pending` e pulam (linha 474). Consequencia: lembrete nunca enviado para essa sessao/tipo. Probabilidade: baixa (crash durante ~1-2s de processamento por reminder). Mitigacao natural: se for o 24h que fica orfao, o 1h (tipo diferente, registro separado) ainda funciona. Acao necessaria: nenhuma agora. Para hardening futuro (Sprint 8), considerar tratar `pending` com `updated_at` > 5 min como abandonado.
+
+**Risco 2: reenvio duplicado sob concorrencia.** Se duas invocacoes rodam simultaneamente (cron overlap ou trigger manual), ambas fazem SELECT, ambas veem `failed`, ambas fazem UPDATE para `pending`, ambas enviam. Paciente recebe 2 emails. Probabilidade: muito baixa (cron a cada 15 min, funcao termina em <30s). Consequencia: email duplicado, sem dano. A protecao ideal seria `UPDATE ... WHERE delivery_status = 'failed' RETURNING *` (claim atomico), mas o Supabase JS client nao expoe row count facilmente. Acao necessaria: nenhuma agora. Para hardening futuro, considerar SELECT FOR UPDATE ou RETURNING.
+
+Ambos os riscos sao edge cases de baixa probabilidade com consequencias brandas. O mecanismo de retry resolve o caso comum (falha transiente do Resend) corretamente. Comentario falso na linha 555 foi corrigido. W3 fechado.
+
+### W4: Token INSERT sem error check -- FECHADO
+
+**Verificado.** Os dois INSERTs agora verificam erro (linhas 517-525 e 527-535). Links so entram no email se **ambos** forem bem-sucedidos (linha 538: `if (!confirmInsertErr && !cancelInsertErr)`). Se qualquer INSERT falhar, o email e enviado sem links -- comportamento identico ao lembrete de 1h e ao retry.
+
+O email sem links e coerente: o template `buildReminderEmail` renderiza `actionLinks = ""` e `actionLinksText = ""` quando `confirmUrl` e `cancelUrl` sao null (linhas 190-213). O corpo do email nao menciona links que nao existem -- nenhuma referencia orfao tipo "clique abaixo" sem botao. W4 fechado.
+
+### W5: admin client fora da allowlist -- FECHADO (via reporte)
+
+O Stack Agent reportou a necessidade de atualizar a allowlist ao Architect, sem editar `architecture.md` ele proprio. Isso e o comportamento correto -- o Architect e o dono do documento. A correcao de compliance acontece quando o Architect atualiza a secao 6.2. Para efeito deste review, o uso do admin client em confirm-action.ts e justificado tecnicamente (usuario nao autenticado, email_action_tokens sem RLS) e o report ao Architect foi feito. W5 fechado.
+
+### Suggestions aplicadas
+
+- **S5 (touch targets):** Botoes de navegacao agora usam `h-10 w-10` (40x40px) -- melhoria de 32px para 40px. Abaixo dos 44px ideais por 4px, mas aceitavel na pratica. Aplicada
+- **S6 (toUTCTimestamp):** TSDoc adicionado documentando que -03:00 e fixo desde o Decreto 9.772/2019 e que a funcao deve mudar para Intl se DST voltar. Aplicada
+- **S1 (status divergence):** Recusada. Argumento: divergencia documentada, RPC e a garantia, app-side e UX. **Procede** -- a divergencia e segura e o codigo documenta a intencao
+- **S2 (getScheduleSessions):** Recusada. Argumento: funcao chamada por Server Component, nao e Server Action exportada. **Parcialmente incorreta na justificativa** (a funcao ESTA exportada de um arquivo `"use server"`, o que a torna tecnicamente uma Server Action pelo Next.js). Porem a **conclusao esta correta**: o parametro `SupabaseClient` nao e serializavel pelo React, o que impede invocacao do client. Mesmo que fosse invocavel, a RLS protege os dados. Risco pratico zero. Recusa aceitavel
+- **S3 (batch limit):** Aceita como pendencia tecnica
+- **S4 (timingSafeEqual nativo):** Aceita como pendencia tecnica
+
+### Regressao (rodada 2)
+
+As correcoes alteraram 4 arquivos:
+- `confirm-action.ts` -- logica de retorno (sem throw)
+- `ScheduleClient.tsx` -- wrappers de visibilidade
+- `DayView.tsx` -- remocao de `md:hidden`
+- `WeekView.tsx` -- remocao de `hidden md:block`
+- `send-reminders/index.ts` -- retry + error check em token INSERT
+
+Nenhum import removido que estivesse em uso. As classes CSS removidas dos filhos foram transferidas para o pai. 408 testes passam, zero regressao.
+
+---
+
+## Veredicto Final
+
+APROVADO. 5/5 warnings fechados. Zero blockers. Zero warnings restantes. Suggestions pendentes registradas no status file (S1-S4 como pendencias tecnicas, S5-S6 aplicadas).
+
+O mecanismo de retry da Edge Function tem dois riscos residuais de concorrencia (pending orfao e duplicacao sob overlap), ambos de baixa probabilidade e consequencia branda. Registrar como observacao para hardening na Sprint 8, nao bloqueiam aprovacao.
+
+Sprint 4 pode avancar para Sprint 5 -- Financeiro & Asaas.
