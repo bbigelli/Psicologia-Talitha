@@ -1,7 +1,7 @@
 # Status: talitha-psicologia
-## Fase atual: Sprint 1 ENCERRADA -- pronto para Sprint 2
-## Ultimo agente: QA Agent (rodada 4 -- final)
-## Branch: feature/sprint-1-foundation
+## Fase atual: Execucao -- Sprint 2 IMPLEMENTADA (aguardando Code Review + QA)
+## Ultimo agente: Next.js Agent (Sprint 2)
+## Branch: feature/sprint-2-auth
 
 ### Planejamento
 - Decisoes de stack e escopo: OK (docs/decisions.md)
@@ -17,28 +17,34 @@
 ### Sprint 1: Fundacao -- ENCERRADA
 - Task 1.1-1.7: CONCLUIDAS
 - Code Review: APROVADO
-- 4 patches aplicados (migrations 121200, 121300, 121400)
-- QA: **APROVADO** (4 rodadas, docs/talitha-qa-sprint-1.md)
-  - 91 testes totais (90 passando, 0 falhando)
-  - 9/9 RPCs retornam 42501 para anon
-  - audit_log grava com hash chain -- provado por execucao
-  - Matriz 9x3 (funcao x papel) sem divergencias criticas
+- QA: APROVADO (91 testes, 90 passando)
+- 4 patches aplicados
+
+### Sprint 2: Autenticacao & MFA -- IMPLEMENTADA
+- Task 2.1: Login e callback de autenticacao -- CONCLUIDA
+- Task 2.2: MFA TOTP (setup e verificacao) -- CONCLUIDA
+- Task 2.3: Recuperacao de senha -- CONCLUIDA
+- Task 2.4: Middleware completo -- CONCLUIDA
+- Task 2.5: Layouts de area (5 route groups) -- CONCLUIDA
+- Task 2.6: Onboarding e perfil da psicologa -- CONCLUIDA
+- Seed de usuarios de desenvolvimento: CONCLUIDO (scripts/seed-dev-users.ts)
+- Credenciais de teste: docs/credentials.md (git-ignored)
+- Build: PASSA (npm run build sem erros)
+- TypeScript: PASSA (npx tsc --noEmit limpo)
+- Testes: 147 total (146 passando, 1 pulado) -- SEM REGRESSAO (era 91 na Sprint 1)
+- Code Review: PENDENTE
+- QA: PENDENTE
 
 ### Dados de teste no banco
-- 4 entradas no audit_log (append-only, permanentes):
-  - action='QA_SPRINT_1_HASH_CHAIN_TEST' (x2) + 'QA_SPRINT_1_GRANTS_REGRESSION' (x2)
-  - actor_source='anonymous', criadas pelo QA para validar F3
+- 4 entradas no audit_log da Sprint 1
+- 2 usuarios criados via seed: psicologa e paciente de teste
+- Perfis criados em profiles para ambos
 
-### Pendencias para QA Sprint 2
-- Coluna authenticated da matriz: confirmar 6 GRANT e 2 DENY com usuario real
-- V7/DoD-4: column-level GRANT (requer authenticated)
-- V18 para authenticated: varredura generica
-
-### Pendencias tecnicas (nao bloqueantes)
+### Pendencias tecnicas (nao bloqueantes, herdadas da Sprint 1)
 - S1: Adicionar ASAAS_BASE_URL ao .env.example
 - S2: Adicionar --destructive-foreground ao globals.css
 - S6: Remover toast.tsx duplicado
 - S7: Corrigir referencia --font-geist-mono
 
 ### Proximo passo
-Sprint 2 -- Autenticacao & MFA. Iniciar via `/gp next`.
+Ativar Code Review para Sprint 2, seguido de QA.

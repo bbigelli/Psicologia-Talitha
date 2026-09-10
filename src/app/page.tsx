@@ -1,19 +1,32 @@
-export default function Home() {
-  return (
-    <main className="flex flex-1 flex-col items-center justify-center gap-6 p-8">
-      <div className="flex flex-col items-center gap-2 text-center">
-        <h1 className="text-3xl font-bold text-foreground">
-          Talitha Psicologia
-        </h1>
-        <p className="text-muted-foreground max-w-md">
-          Plataforma integrada para gestao de consultorio de psicologia online.
-        </p>
-      </div>
-      <div className="rounded-lg border border-border bg-card p-6 text-card-foreground shadow-sm">
-        <p className="text-sm text-muted-foreground">
-          Sistema em desenvolvimento. Acesso restrito.
-        </p>
-      </div>
-    </main>
-  )
+import { redirect } from "next/navigation"
+import { createClient } from "@/lib/supabase/server"
+
+/**
+ * Root page — redirects based on authentication status.
+ * Unauthenticated: → /login
+ * Psychologist: → /dashboard (middleware handles MFA/onboarding gates)
+ * Patient: → /portal
+ */
+export default async function Home() {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+
+  if (!user) {
+    redirect("/login")
+  }
+
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("role")
+    .eq("id", user.id)
+    .single()
+
+  if (profile?.role === "patient") {
+    redirect("/portal")
+  }
+
+  // Default: psychologist or unknown → middleware handles further
+  redirect("/dashboard")
 }
