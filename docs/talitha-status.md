@@ -1,6 +1,6 @@
 # Status: talitha-psicologia
-## Fase atual: Execucao -- Sprint 4 QA APROVADO, pronta para Sprint 5
-## Ultimo agente: QA Agent (Sprint 4)
+## Fase atual: Execucao -- Sprint 4 CODE REVIEW REPROVADO (0B 5W), aguardando correcoes
+## Ultimo agente: Code Reviewer (Sprint 4)
 ## Branch: feature/sprint-4-schedule
 
 ### Planejamento
@@ -77,22 +77,8 @@
 - Proposito opcional (communication): decisao aceitavel para Sprint 3. Nota: Sprint 4 deve verificar hash do texto ao enviar lembretes
 - Regressao: zero (324 testes, 323 passando)
 
-### Pendencias tecnicas acumuladas
-- **F6 (WARNING):** Politica de senha no Supabase Auth dashboard NAO configurada
-- **W3 (OBRIGATORIO Sprint 4):** Extrair CURRENT_CONSENT_VERSION para modulo proprio sem dependencias
-- S1 (Sprint 2): middleware.ts deprecation
-- S4 (Sprint 2): ProfileForm exige CPF em toda edicao
-- S6 (Sprint 2): Sidebar mobile sem Vaul
-- S7 (Sprint 2): x-forwarded-for trust rule ausente
-- S10 (Sprint 2): Considerar wrapper withAuthenticatedUser
-- S11 (Sprint 2): eslint error em MfaSetup.tsx
-- EMAIL_FROM e RESEND_API_KEY_APP nao adicionados ao .env.example
-- W1 (QA Sprint 3): unused imports na Sprint 3
-- S3 (CR Sprint 3): documentar consumo de convite na allowlist do Architect
-- Nota Sprint 4: verificar hash do texto de comunicacao ao enviar lembretes
-
-### Sprint 4: Agenda & Lembretes -- APROVADA
-- **W3 fix**: CONCLUIDO -- src/lib/consent-version.ts criado, 3 consumidores atualizados, 5 testes de sincronizacao
+### Sprint 4: Agenda & Lembretes -- CODE REVIEW REPROVADO (rodada 1)
+- **W3 fix (Sprint 3)**: CONCLUIDO -- src/lib/consent-version.ts criado, 3 consumidores atualizados, 5 testes de sincronizacao
 - Task 4.1: Visualizacao da agenda (semanal/diaria) -- CONCLUIDA
 - Task 4.2: Criacao de sessao com recorrencia semanal -- CONCLUIDA
 - Task 4.3: Bloqueio de conflito de horario -- CONCLUIDA (integrado em Task 4.2)
@@ -102,32 +88,24 @@
 - Task 4.7: Confirmacao de presenca por email -- CONCLUIDA
 - Build: PASSA
 - TypeScript: PASSA
-- Testes: 375 passando, 1 pulado (376 total) -- SEM REGRESSAO (324 anteriores intactos + 52 novos)
-- Segredos: varredura limpa, nenhum segredo hardcoded
+- Testes: 408 passando, 1 pulado (409 total) -- SEM REGRESSAO
+- QA: APROVADO -- docs/talitha-qa-sprint-4.md
+- **Code Review 1: REPROVADO (0B 5W 6S) -- docs/talitha-review-sprint-4.md**
 
-### RPCs (migration 17, aplicada)
-- `create_session` -- chamado via client autenticado (RPC deriva psychologist_id de auth.uid())
-- `reschedule_session` -- chamado via client autenticado (RPC valida ownership, status, conflito)
-- Admin client REMOVIDO de sessions.ts -- zero imports de createAdminClient
+### Code Review Sprint 4 -- Warnings a corrigir
+- **W1:** Late cancellation via email faz throw apos side effect → usuario ve "Erro interno do servidor" para operacao bem-sucedida. Arquivo: `src/lib/actions/confirm-action.ts` linhas 145-188
+- **W2:** Visao diaria em desktop renderiza vazia (DayView md:hidden conflita com wrapper md:block). Arquivo: `src/components/schedule/ScheduleClient.tsx` + `DayView.tsx`
+- **W3:** At-most-once: lembrete com falha nao e reenviado (DoD violada). Arquivo: `supabase/functions/send-reminders/index.ts` linhas 441-459
+- **W4:** Token INSERT sem error check na Edge Function. Arquivo: `supabase/functions/send-reminders/index.ts` linhas 477-492
+- **W5:** `createAdminClient` em confirm-action.ts fora da allowlist de architecture.md secao 6.2. Atualizar allowlist
 
-### Admin client restante nesta sprint (justificado)
-- `src/lib/actions/confirm-action.ts` -- usuario nao autenticado (clicando link de email); email_action_tokens nao tem RLS; cancel/confirm exigem service_role
-- `src/app/(auth)/confirmar/[token]/page.tsx` -- pagina publica lendo token sem auth
-
-### Deploy pendente (Edge Function)
-- `supabase/functions/send-reminders/index.ts` -- deploy via `supabase functions deploy send-reminders`
-- Secrets necessarios: CRON_SECRET, RESEND_API_KEY_CRON, SITE_URL, EMAIL_FROM
-- Cron job: invocar a cada 15 minutos com `Authorization: Bearer <CRON_SECRET>`
-- Access token do Supabase nao configurado nesta maquina -- deploy requer acao do dev
-
-### Decisoes tomadas pelo agente (sem consulta)
-1. RPCs create_session e reschedule_session adotadas via client autenticado -- admin client removido de sessions.ts
-2. Cancel via RPC existente cancel_session -- ja existia, usa diretamente. Late-cancellation prefix enviado na propria chamada da RPC (sem UPDATE separado)
-3. Confirmation tokens no 24h reminder apenas (nao no 1h) -- 1h e muito tarde para confirmar/cancelar
-4. Cancellation via email token usa admin client (sem auth.uid()) porque e acao anonima de link -- justificado
-5. Timezone: America/Sao_Paulo explicito em todas as formatacoes -- offset -03:00 para timestamptz
-6. tsconfig.json exclui supabase/functions/ (Deno, nao Node.js)
-7. App-side conflict check mantido para UX (mostra qual paciente conflita) mas RPC e a garantia; erros da RPC mapeados para pt-BR via mapRpcError()
+### Suggestions (nao bloqueiam, pendencias tecnicas)
+- S1 (CR Sprint 4): Divergencia de status entre pre-check app e RPC (app exclui completed, RPC inclui)
+- S2 (CR Sprint 4): getScheduleSessions aceita psychologistId em arquivo "use server"
+- S3 (CR Sprint 4): Edge Function sem batch limit
+- S4 (CR Sprint 4): timingSafeEqual manual quando Deno tem nativo
+- S5 (CR Sprint 4): Touch targets navegacao abaixo de 44px
+- S6 (CR Sprint 4): toUTCTimestamp hardcoda -03:00 sem documentar premissa
 
 ### Pendencias tecnicas acumuladas
 - **F6 (WARNING):** Politica de senha no Supabase Auth dashboard NAO configurada
@@ -137,20 +115,10 @@
 - S7 (Sprint 2): x-forwarded-for trust rule ausente
 - S10 (Sprint 2): Considerar wrapper withAuthenticatedUser
 - S11 (Sprint 2): eslint error em MfaSetup.tsx
-- .env.example: nao pude verificar conteudo (permissao bloqueada) -- pode necessitar CRON_SECRET, RESEND_API_KEY_CRON, SITE_URL se nao presente
+- .env.example: pode necessitar CRON_SECRET, RESEND_API_KEY_CRON, SITE_URL se nao presente
 - W1 (QA Sprint 3): unused imports na Sprint 3
 - S3 (CR Sprint 3): documentar consumo de convite na allowlist do Architect
 - Deploy da Edge Function send-reminders PENDENTE
 
-- QA: APROVADO -- docs/talitha-qa-sprint-4.md
-- Build: PASSA
-- TypeScript: PASSA
-- Testes: 408 passando, 1 pulado (409 total) -- SEM REGRESSAO (375 anteriores intactos + 33 novos)
-- Ciclo completo de lembrete: FUNCIONA (sessao -> edge function -> reminder + tokens -> idempotencia)
-- Trigger reschedule: room_name regenerado, waiting/admitted limpos
-- Tokens confirmar/cancelar: DISTINTOS e purpose-bound
-- Consentimento revogado: BLOQUEIA envio
-- Email sem dado de saude: CONFIRMADO
-
 ### Proximo passo
-Avancar para Sprint 5 -- Financeiro & Asaas.
+Stack agent corrige os 5 warnings do Code Review Sprint 4. Apos correcoes, Code Reviewer roda novamente (rodada 2).
