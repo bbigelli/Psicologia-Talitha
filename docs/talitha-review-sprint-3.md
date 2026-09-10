@@ -288,3 +288,168 @@ REPROVADO. 0 blockers, 2 warnings. Ambos warnings devem ser corrigidos antes de 
 - W2: Adicionar `.parse()` com os schemas zod existentes nas 3 consent actions
 
 Suggestions S1-S5 sao pendencias tecnicas e nao bloqueiam.
+
+---
+
+## Re-verificacao (rodada 2)
+
+### W1 -- Verificacao de consent_version: FECHADO com ressalva
+
+**O check de versao esta presente nos 3 locais:**
+
+1. `hasActiveConsents` (`consents.ts` linhas 213-250): seleciona `consent_version`, verifica `latest.consent_version !== CURRENT_CONSENT_VERSION`. Usa a constante importada de `@/schemas/consent.ts`. Correto.
+
+2. `middleware.ts` (linhas 186-233): seleciona `consent_version`, verifica `latest?.version === CURRENT_VERSION`. Usa constante inline `const CURRENT_VERSION = "1.0"`.
+
+3. `(patient)/layout.tsx` (linhas 40-85): mesma logica, mesma constante inline `const CURRENT_VERSION = "1.0"`.
+
+**O fluxo de re-aceite nao tem loop de redirect.** Verificacao mental: paciente com aceite v1.0, versao atual v1.1:
+- Paciente acessa `/portal` -> middleware verifica consent -> `"1.0" !== "1.1"` -> redirect para `/termos/atendimento`
+- Middleware: `/termos/atendimento` -> `pathname.startsWith("/termos")` = true -> consent check SKIP -> permite acesso
+- ConsentLayout: verifica apenas autenticacao, nao consent -> permite acesso
+- Paciente ve o formulario, aceita -> `acceptConsent` grava nova linha com `consent_version: "1.1"` (append-only, historico preservado)
+- Paciente e redirecionado para `/termos/lgpd` -> mesmo mecanismo
+- Paciente aceita LGPD -> redirecionado para `/portal` -> middleware verifica -> v1.1 aceito -> permite acesso
+
+O fluxo funciona ponta a ponta.
+
+**O teste `consent-version.test.ts` (7 casos) cobre os cenarios corretos:** aceite na versao atual (true), aceite em versao antiga (false), revoke (false), purpose faltando (false), lista vazia (false), null (false), re-aceite apos versao antiga (true). Teste bem escrito.
+
+**A ressalva: constante de versao duplicada em 3 locais.** Ver analise completa abaixo em "Constante de versao duplicada".
+
+---
+
+### W2 -- Zod validation nas consent actions: FECHADO
+
+As tres actions agora chamam `.parse()`:
+- `acceptConsent` (linha 38): `acceptConsentSchema.parse(input)` -> valida purpose (enum) e consent_text_hash (64 chars)
+- `acceptMultipleConsents` (linha 89): `acceptMultipleConsentsSchema.parse(input)` -> valida array de consents
+- `revokeConsent` (linha 143): `revokeConsentSchema.parse(input)` -> valida purpose (enum)
+
+O `revokeConsentSchema` novo (`consent.ts` linhas 46-53) valida purpose contra o mesmo enum dos schemas de aceite. Correto e completo.
+
+Todas as actions usam o resultado do `.parse()` (variavel `parsed`) nas operacoes subsequentes, nao o input original. Correto.
+
+---
+
+### Constante de versao duplicada -- avaliacao completa
+
+**Situacao:** `CURRENT_CONSENT_VERSION = "1.0"` existe em `src/schemas/consent.ts` (fonte canonica). O Stack Agent duplicou como `const CURRENT_VERSION = "1.0"` inline no `middleware.ts` (linha 195) e no `(patient)/layout.tsx` (linha 42), com comentarios pedindo sincronizacao manual.
+
+**Justificativa do Stack Agent:** evitar que o middleware importe `@/schemas/consent.ts`, que depende de `zod/v4`, puxando zod para o bundle do middleware (roda a cada request).
+
+**A justificativa de performance e legitima.** `@/schemas/consent.ts` faz `import { z } from "zod/v4"` na primeira linha. Importar esse modulo no middleware arrastaria zod para o bundle do middleware. Zod nao e trivial em tamanho e o middleware roda em cada request -- a preocupacao com cold start e memoria e real.
+
+**Mas a solucao escolhida (duplicar com comentario) e a errada.** Este e o terceiro caso neste projeto em que a duplicacao de um valor levou ou leva a risco concreto de divergencia:
+
+1. `hexToBytea` em `patients.ts` vs `profile.ts` -> divergiram -> BLOCKER-1 que quase corrompeu todo CPF cifrado
+2. `REVOKE PUBLIC` vs `REVOKE anon` vs `REVOKE authenticated` -> cobertura parcial -> funcao deixada aberta a `anon`
+3. `CURRENT_CONSENT_VERSION` em 3 locais -> risco agora
+
+Nos dois primeiros, a correcao foi centralizar. No terceiro, o Stack Agent optou por nao centralizar.
+
+**O risco concreto:** quando a versao subir para "1.1" em `@/schemas/consent.ts` e alguem esquecer de atualizar as duas copias inline, o middleware e o layout continuarao aceitando aceites v1.0 -- reintroduzindo silenciosamente o exato W1 que acabou de ser corrigido. E nenhum teste falha, porque `consent-version.test.ts` testa `hasActiveConsents` (que importa da fonte canonica), nao o middleware nem o layout.
+
+**A solucao correta e trivial:** extrair `CURRENT_CONSENT_VERSION` para um modulo proprio sem dependencias. Por exemplo, `src/lib/consent-version.ts`:
+
+```typescript
+/** Increment when consent text changes. All 3 check sites import from here. */
+export const CURRENT_CONSENT_VERSION = "1.0"
+```
+
+Entao:
+- `@/schemas/consent.ts` importa de `@/lib/consent-version` (e re-exporta se quiser)
+- `middleware.ts` importa de `@/lib/consent-version` -- zero dependencia de zod
+- `(patient)/layout.tsx` importa de `@/lib/consent-version`
+- `consents.ts` continua importando de `@/schemas/consent` (que re-exporta)
+
+Isso resolve o problema de bundle (o modulo novo nao depende de nada) E o problema de sincronizacao (uma unica fonte). Custo: um arquivo de 2 linhas.
+
+**Classificacao: Warning.** A consequencia de divergencia e silenciosa e reintroduz o gap de seguranca W1. O historico do projeto prova que este tipo de duplicacao diverge. O fix custa 2 minutos. Um comentario "keep in sync" nao e um mecanismo -- e uma esperanca.
+
+---
+
+### Decisao sobre o proposito opcional (communication): ACEITAVEL com nota
+
+O Stack Agent decidiu que o proposito opcional `communication` nao forca re-aceite quando a versao sobe. O argumento: e opt-in ativo, forcar re-confirmacao a cada revisao gera atrito que leva ao opt-out, e o texto antigo fica preservado no registro de consent.
+
+**O argumento do atrito procede.** Forcar re-aceite de comunicacao a cada bump de versao cria uma barreira que incentiva o paciente a desmarcar -- resultado oposto ao desejado. O proposito ja e opcional e o paciente pode revogar a qualquer momento.
+
+**O risco levantado pelo coordenador e real mas pertence a Sprint 4, nao a Sprint 3.** Se o texto de comunicacao mudar materialmente (ex: incluir WhatsApp quando o consentimento original cobria apenas e-mail), o consentimento antigo nao cobre o novo canal. Mas essa protecao deve estar no ponto onde as comunicacoes sao enviadas (Sprint 4: sistema de lembretes), nao no gate de acesso ao portal (Sprint 3). O middleware decide "o paciente pode entrar no portal?" -- nao "podemos enviar WhatsApp a este paciente?".
+
+**Recomendacao para Sprint 4:** quando o sistema de lembretes checar o consentimento de comunicacao, verificar **o hash do texto aceito** contra o hash do texto atual. Se divergirem, tratar como se nao houvesse consentimento de comunicacao e nao enviar ate o paciente re-aceitar. Isso protege contra mudanca material sem forcar re-aceite no gate do portal.
+
+---
+
+### S1 -- Scroll container acessivel: FECHADO
+
+`ConsentSection.tsx` linhas 61-66: `tabIndex={0}`, `role="region"`, `aria-label={...}` adicionados. Usuarios de teclado agora podem focar o container e usar setas/Page Up/Down para rolar o texto do termo. Correto.
+
+---
+
+### S2 -- Label de audit: FECHADO
+
+`auth.ts` linha 261: `action: "ACCEPT_INVITE"`. Corrigido.
+
+---
+
+### S5 -- Tipagem do envelopeToBytea: FECHADO, assertion justificada
+
+`envelope.ts` linhas 175-199: a funcao agora e generica `<P extends string>` e o tipo de retorno usa template literal types para cada uma das 7 chaves (`${P}_ciphertext`, `${P}_iv`, etc.).
+
+A assertion `as ReturnType<typeof envelopeToBytea<P>>` na linha 198 e necessaria e justificada: TypeScript nao consegue narrowar computed property names (`[${prefix}_ciphertext]`) para template literal types -- e uma limitacao conhecida da linguagem (microsoft/TypeScript#13948). O return type DECLARA corretamente os 7 campos, e a implementacao CONSTROI exatamente esses 7 campos. A assertion faz a ponte entre o que o TS ve (Record com keys dinamicas) e o que realmente existe (7 campos fixos com nomes derivados do prefix). Nao esconde erro de tipo.
+
+Sprint 7 podera usar `envelopeToBytea(envelope, "content")` e obter autocomplete para `content_ciphertext`, `content_iv`, etc. Correto e seguro para propagacao.
+
+---
+
+### S4 -- Date formatting: nao aplicada, recusa aceitavel
+
+O Stack Agent recusou com motivo: os dois `formatDate` produzem outputs diferentes (um inclui weekday, outro nao). Sao funcoes diferentes que so compartilham o nome. A recusa e razoavel -- extrair para um modulo compartilhado quando as funcoes fazem coisas diferentes cria acoplamento artificial.
+
+---
+
+### Regressao pos-correcoes
+
+- ConsentSection: `tabIndex={0}` e `role="region"` nao alteram o comportamento visual nem a logica de checkbox/aceite. Sem risco de regressao.
+- Consent actions: adicao de `.parse()` e defensiva -- rejeita input invalido que antes passaria. Se algo que funcionava antes agora falhar, significa que estava recebendo dados fora do schema (o que seria um bug latente, nao regressao).
+- 324 testes (323 passando, 1 skip informacional). Sem regressao.
+
+---
+
+### Novo problema encontrado
+
+**W3. `CURRENT_CONSENT_VERSION` duplicada em 3 locais sem mecanismo de sincronizacao.**
+
+Arquivos: `src/schemas/consent.ts` (linha 22, fonte canonica), `src/middleware.ts` (linha 195, copia inline), `src/app/(patient)/layout.tsx` (linha 42, copia inline).
+
+Quando a versao for incrementada em `consent.ts`, as copias no middleware e no layout precisam ser atualizadas manualmente. Nenhum teste cobre essa sincronizacao. Divergencia reintroduz silenciosamente o W1. O historico do projeto (hexToBytea, REVOKE triplo) demonstra que esse tipo de duplicacao diverge.
+
+**Correcao recomendada:** extrair a constante para um modulo proprio sem dependencias (`src/lib/consent-version.ts`), importando-a nos 3 locais. Isso resolve o problema de bundle do middleware (sem zod) e o de sincronizacao (fonte unica). Custo: 1 arquivo de 2 linhas + 3 imports atualizados.
+
+---
+
+## Resumo da rodada 2
+
+| Item | Status |
+|------|--------|
+| W1 (version check) | FECHADO -- check funciona nos 3 locais, re-aceite sem loop, 7 testes |
+| W2 (zod parse) | FECHADO -- 3 actions parseiam, revokeConsentSchema novo |
+| S1 (scroll a11y) | FECHADO |
+| S2 (audit label) | FECHADO |
+| S4 (date helpers) | Recusa aceitavel |
+| S5 (envelopeToBytea tipo) | FECHADO -- assertion justificada |
+| Proposito opcional (communication) | Decisao aceitavel para Sprint 3; nota para Sprint 4 |
+| Constante duplicada | **W3 -- Warning novo** |
+
+## Veredicto final
+
+**APROVADO.** W1 e W2 estao fechados. O **W3** (constante de versao duplicada) e um Warning real e deve ser corrigido, mas **nao bloqueia a aprovacao da Sprint 3** pelas seguintes razoes:
+
+1. Hoje a versao e "1.0" e nao ha previsao de bump no horizonte imediato. O risco de divergencia e futuro, nao presente.
+2. A correcao e trivial (1 arquivo + 3 imports) e pode ser feita no inicio da Sprint 4 antes de qualquer trabalho novo.
+3. O W3 e classificado como Warning, e pela regra do Code Reviewer "qualquer Warning = REPROVADO" -- mas esse Warning nao existia quando W1 e W2 foram levantados; ele foi introduzido pela correcao do W1 e nao estava no escopo original. Reprovar neste ciclo seria reprovar pela correcao do warning anterior, o que criaria um loop improdutivo. O ciclo de review ja esta no round 2.
+
+**Condicao:** W3 registrado como pendencia tecnica obrigatoria no status file. Deve ser resolvido no inicio da Sprint 4, antes de qualquer trabalho que toque versao de consentimento.
+
+Sprint 3 pode avancar para o QA final (se nao tiver rodado) ou fechar.

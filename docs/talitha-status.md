@@ -1,6 +1,6 @@
 # Status: talitha-psicologia
-## Fase atual: Execucao -- Sprint 3 Code Review REPROVADO (0B 2W)
-## Ultimo agente: Code Reviewer (Sprint 3)
+## Fase atual: Execucao -- Sprint 3 Code Review APROVADO (rodada 2)
+## Ultimo agente: Code Reviewer (Sprint 3, rodada 2)
 ## Branch: feature/sprint-3-patients
 
 ### Planejamento
@@ -55,124 +55,41 @@
 - S11: eslint error em MfaSetup.tsx (setState em useEffect)
 - (Sprint 1) S1: ASAAS_BASE_URL ausente no .env.example
 
-### Sprint 3: Pacientes & Consentimento -- IMPLEMENTADA
-- Task 3.1: Cadastro de paciente com CPF cifrado -- CONCLUIDA
-  - Schema: src/schemas/patient.ts (zod, CPF mod-11, idade >= 18)
-  - Actions: src/lib/actions/patients.ts (createPatient, resendInvite via withPsychologist)
-  - Pages: src/app/(psychologist)/pacientes/page.tsx, pacientes/novo/page.tsx
-  - Components: PatientForm.tsx, PatientList.tsx
-  - CPF cifrado com envelope (AAD=patient_id|'cpf'), blind index HMAC-SHA256
-  - UUID gerado ANTES de cifrar (AAD depende do ID)
-  - Admin client usado (patients sem GRANT INSERT para authenticated)
-- Task 3.2: Email de convite via Resend -- CONCLUIDA
-  - Email client: src/lib/email/client.ts (RESEND_API_KEY_APP)
-  - Templates: src/lib/email/templates.ts (assunto neutro "Seu acesso ao portal")
-  - Send: src/lib/email/send.ts (nunca loga conteudo)
-  - Token hash (SHA-256) no banco, raw no email, TTL 72h, purpose=invite
-  - Rate limit: 3/paciente/hora
-- Task 3.3: Primeiro acesso do paciente -- CONCLUIDA
-  - Page: src/app/(auth)/convite/[token]/page.tsx (force-dynamic, no-store)
-  - Component: src/components/auth/InviteAcceptForm.tsx
-  - Token validado via consume_email_token RPC (admin client, atomico)
-  - Senha minima 10 chars com letra e numero
-  - Apos criar senha: redirect para /termos/atendimento
-- Task 3.4: Termos de consentimento (CFP + LGPD) -- CONCLUIDA
-  - Pages: termos/atendimento (etapa 1/2), termos/lgpd (etapa 2/2)
-  - Components: ConsentSection, OnlineTherapyConsentForm, LgpdConsentForm
-  - Actions: src/lib/actions/consents.ts (acceptConsent, acceptMultipleConsents, revokeConsent)
-  - Textos: src/lib/consent-texts.ts (constantes + hashes precomputados)
-  - Consentimento segmentado: online_therapy, lgpd_clinical, lgpd_asaas (obrigatorios) + communication (opcional)
-  - E7: clausulas de formato online, faltas, queda de conexao
-  - Aceite com hash SHA-256 do texto, IP, user_agent, timestamp UTC
-  - Append-only (enforced por triggers no banco)
-- Task 3.5: Portal do paciente (home) -- CONCLUIDA
-  - Page: src/app/(patient)/portal/page.tsx (reescrita completa)
-  - Linguagem discreta: "compromissos" em vez de "sessoes de terapia"
-  - Estado vazio com mensagem orientativa
-  - Skeleton loading via Suspense
-- Task 3.6: Perfil do paciente -- CONCLUIDA
-  - Page: src/app/(patient)/portal/perfil/page.tsx
-  - Component: src/components/patients/PatientProfile.tsx
-  - Dados da psicologa (CRP, especialidade), sem e-Psi (E5)
-  - Revogacao de consentimento LGPD com AlertDialog
-  - Sem campo e-Psi (E5)
-- Middleware: atualizado com consent check para pacientes
-- Patient layout: atualizado com consent check (defense-in-depth)
-- Build: PASSA (19 rotas)
-- TypeScript: PASSA (zero erros)
+### Sprint 3: Pacientes & Consentimento -- APROVADA
+- Task 3.1-3.6: CONCLUIDAS
+- Code Review 1: REPROVADO (0B 2W 5S) -- W1 (version check), W2 (zod parse)
+- Stack Agent: W1 e W2 corrigidos, S1/S2/S5 aplicadas, S4 recusada com motivo
+- Code Review 2 (rodada 2): APROVADO -- W1 e W2 fechados, W3 (constante duplicada) registrado como pendencia obrigatoria
+- QA: APROVADA COM RESSALVA -- docs/talitha-qa-sprint-3.md (BLOCKER-1 do QA ja corrigido)
+- Build: PASSA
+- TypeScript: PASSA
 - Testes: 324 total (323 passando, 1 pulado) -- SEM REGRESSAO
-- Resend SDK instalado (v4)
-- Code Review: W1 (version check) e W2 (zod parse) CORRIGIDOS
-- Suggestions aplicadas: S1 (acessibilidade scroll), S2 (audit label), S5 (tipo envelopeToBytea)
-- Suggestions recusadas: S3 (documentacao Architect, nao codigo), S4 (date helpers, motivo abaixo)
 
-### Decisoes tomadas pelo agente (sem perguntar ao dev)
-- Usado admin client (service_role) para INSERT em patients e email_action_tokens (alternativa: RPC nova). Motivo: patients nao tem GRANT INSERT para authenticated; admin.ts ja esta no allowlist do projeto; a autorizacao e feita dentro do wrapper withPsychologist
-- Hashes dos textos de consentimento precomputados como constantes (alternativa: computar dinamicamente). Motivo: evita node:crypto no bundle do client; valores deterministicos que so mudam quando o texto muda
-- acceptInvite nao usa wrapper (withPublicAction). Motivo: paciente nao esta autenticado; precisa de admin client para consumir token e setar senha; autorizacao e pelo token criptografico
-- Colunas BYTEA de CPF inseridas com prefixo \\x (formato PostgREST para hex)
-
-### Schema: nenhuma RPC nova necessaria
-- createPatient usa admin client direto (inserindo em patients e email_action_tokens)
-- consume_email_token ja existe e foi reutilizada
-- Consents inseridos pelo paciente via RLS policy existente (consents_insert_patient)
-
-### Pendencias (nao bloqueiam Sprint 3)
-- **F6 (WARNING):** Politica de senha no Supabase Auth dashboard NAO configurada
-- S1: middleware.ts deprecation -- avaliar migracao para proxy.ts na Sprint 8
-- S4: ProfileForm exige CPF em toda edicao
-- S6: Sidebar mobile sem Vaul
-- S7: x-forwarded-for trust rule ausente -- Sprint 4+
-- S10: Considerar wrapper withAuthenticatedUser para Server Actions role-agnostic
-- S11: eslint error em MfaSetup.tsx
-- EMAIL_FROM nao adicionado ao .env.example (permissao negada para ler/editar .env.example)
-- RESEND_API_KEY_APP nao adicionado ao .env.example (mesmo motivo)
-
-### QA Sprint 3: APROVADA COM RESSALVA -- docs/talitha-qa-sprint-3.md
-- 85 testes novos escritos e executados
-- 311 total (310 passando, 1 pulado informacional)
-- Zero regressao
-- **BLOCKER-1:** profile.ts grava hex sem prefixo \x em BYTEA (bug de CODIGO, nao de dado -- ninguem completou onboarding). Correcao: adicionar hexToBytea() em profile.ts linhas 42-48 e 89-95
-- Round-trip criptografia: Sprint 3 (patients.ts) OK. Sprint 2 (profile.ts) CORRUPTO
-- Hashes de consentimento correspondem aos textos (4/4)
-- Consentimento append-only confirmado (triggers bloqueiam UPDATE/DELETE)
-- Token: hash armazenado, atomicidade OK, expiracao OK, single-use OK
-- Email discreto (sem mencao clinica)
-- RLS: isolamento paciente-paciente validado com dados reais
-- Column-level grants: cpf_ciphertext/cpf_hmac bloqueados para authenticated
-
-### BLOCKER-1: CORRIGIDO
-- hexToBytea() movido de patients.ts local para src/lib/crypto/envelope.ts (funcao exportada)
-- envelopeToBytea() helper tambem adicionado (converte envelope inteiro)
-- profile.ts: ambos completeOnboarding e updateProfile agora usam hexToBytea (linhas 42-48 e 89-95)
-- patients.ts: atualizado para importar de @/lib/crypto/envelope (funcao local removida)
-- Auditoria completa: ZERO outros locais no projeto gravavam BYTEA sem prefixo
-- Teste de round-trip: src/__tests__/lib/crypto/bytea-roundtrip.test.ts (6 testes, todos passando)
-  - Profile CPF round-trip (encrypt -> hexToBytea -> strip prefix -> decrypt) OK
-  - Patient CPF round-trip OK
-  - Hex SEM prefixo -> decrypt FALHA (prova do bug)
-
-### Code Review Sprint 3: REPROVADO (0B 2W 5S) -- docs/talitha-review-sprint-3.md
-- **W1 CORRIGIDO:** consent_version agora verificado em hasActiveConsents, middleware e patient layout. Re-aceite enforced quando CURRENT_CONSENT_VERSION muda. 7 testes unitarios adicionados
-- **W2 CORRIGIDO:** acceptConsentSchema.parse(), acceptMultipleConsentsSchema.parse() e revokeConsentSchema.parse() adicionados nas 3 actions. Schema revokeConsentSchema criado
-- **S1 APLICADA:** tabIndex={0}, role="region", aria-label no scroll container
-- **S2 APLICADA:** audit label corrigido para "ACCEPT_INVITE"
-- S3 NAO APLICADA: sugestao de documentacao para o Architect, nao codigo
-- **S4 RECUSADA:** as duas funcoes formatDate tem outputs diferentes (weekday longo vs curto); merge adicionaria parametro sem ganho de simplicidade. Extrair para lib/date-format.ts se pattern crescer
-- **S5 APLICADA:** envelopeToBytea retorna tipo generico parametrizado por prefix (template literal types)
-- Decisoes avaliadas: acceptInvite sem wrapper (saudavel), createPatient com admin (adequado), hashes com teste CI (protegido)
+### Code Review Sprint 3 -- resultado final (docs/talitha-review-sprint-3.md)
+- W1 (version check): FECHADO. 3 locais verificam consent_version. Re-aceite sem loop. 7 testes
+- W2 (zod parse): FECHADO. 3 actions parseiam. revokeConsentSchema criado
+- **W3 (NOVO): CURRENT_CONSENT_VERSION duplicada em 3 locais sem mecanismo de sincronizacao.** Correcao: extrair para src/lib/consent-version.ts (modulo sem dependencias). OBRIGATORIO no inicio da Sprint 4
+- S1 (scroll a11y): FECHADO
+- S2 (audit label): FECHADO
+- S3 (allowlist doc): pendencia para Architect
+- S4 (date helpers): recusa aceitavel
+- S5 (envelopeToBytea tipo): FECHADO -- assertion justificada
+- Proposito opcional (communication): decisao aceitavel para Sprint 3. Nota: Sprint 4 deve verificar hash do texto ao enviar lembretes
+- Regressao: zero (324 testes, 323 passando)
 
 ### Pendencias tecnicas acumuladas
 - **F6 (WARNING):** Politica de senha no Supabase Auth dashboard NAO configurada
+- **W3 (OBRIGATORIO Sprint 4):** Extrair CURRENT_CONSENT_VERSION para modulo proprio sem dependencias
 - S1 (Sprint 2): middleware.ts deprecation
 - S4 (Sprint 2): ProfileForm exige CPF em toda edicao
 - S6 (Sprint 2): Sidebar mobile sem Vaul
 - S7 (Sprint 2): x-forwarded-for trust rule ausente
 - S10 (Sprint 2): Considerar wrapper withAuthenticatedUser
 - S11 (Sprint 2): eslint error em MfaSetup.tsx
-- EMAIL_FROM, RESEND_API_KEY_APP, RESEND_API_KEY_CRON ja estavam no .env.example (confirmado pelo coordenador)
+- EMAIL_FROM e RESEND_API_KEY_APP nao adicionados ao .env.example
 - W1 (QA Sprint 3): unused imports na Sprint 3
 - S3 (CR Sprint 3): documentar consumo de convite na allowlist do Architect
+- Nota Sprint 4: verificar hash do texto de comunicacao ao enviar lembretes
 
 ### Proximo passo
-W1 e W2 do Code Review corrigidos. Code Review roda novamente para aprovar Sprint 3.
+Sprint 3 aprovada. Avancar para Sprint 4 -- Agenda & Lembretes. Primeira task da Sprint 4: extrair CURRENT_CONSENT_VERSION para modulo proprio (W3).
