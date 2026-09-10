@@ -16,10 +16,10 @@ export type ConsentPurpose =
   (typeof CONSENT_PURPOSES)[keyof typeof CONSENT_PURPOSES]
 
 /**
- * Consent version — increment when the text changes.
- * Patients must re-accept after a version bump.
+ * Re-export from the canonical module (zero dependencies).
+ * @see src/lib/consent-version.ts
  */
-export const CURRENT_CONSENT_VERSION = "1.0"
+export { CURRENT_CONSENT_VERSION } from "@/lib/consent-version"
 
 export const acceptConsentSchema = z.object({
   purpose: z.enum([

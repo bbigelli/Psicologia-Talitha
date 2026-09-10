@@ -14,6 +14,8 @@ import "server-only"
  * Approved subjects:
  * - Invite: "Seu acesso ao portal"
  * - Security: "Atividade na sua conta"
+ * - Reminder: "Lembrete de compromisso" (Edge Function send-reminders)
+ * - Cancellation: "Atualizacao de compromisso" (notification emails)
  */
 
 /**

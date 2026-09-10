@@ -1,7 +1,7 @@
 # Status: talitha-psicologia
-## Fase atual: Execucao -- Sprint 3 Code Review APROVADO (rodada 2)
-## Ultimo agente: Code Reviewer (Sprint 3, rodada 2)
-## Branch: feature/sprint-3-patients
+## Fase atual: Execucao -- Sprint 4 implementada, aguardando Code Review
+## Ultimo agente: Next.js Agent (Sprint 4)
+## Branch: feature/sprint-4-schedule
 
 ### Planejamento
 - Decisoes de stack e escopo: OK (docs/decisions.md)
@@ -91,5 +91,51 @@
 - S3 (CR Sprint 3): documentar consumo de convite na allowlist do Architect
 - Nota Sprint 4: verificar hash do texto de comunicacao ao enviar lembretes
 
+### Sprint 4: Agenda & Lembretes -- IMPLEMENTADA (aguardando CR + QA)
+- **W3 fix**: CONCLUIDO -- src/lib/consent-version.ts criado, 3 consumidores atualizados, 5 testes de sincronizacao
+- Task 4.1: Visualizacao da agenda (semanal/diaria) -- CONCLUIDA
+- Task 4.2: Criacao de sessao com recorrencia semanal -- CONCLUIDA
+- Task 4.3: Bloqueio de conflito de horario -- CONCLUIDA (integrado em Task 4.2)
+- Task 4.4: Cancelamento com politica de prazo e remarcacao -- CONCLUIDA
+- Task 4.5: Proximas sessoes no portal do paciente -- CONCLUIDA
+- Task 4.6: Lembretes automaticos (Edge Function send-reminders) -- CONCLUIDA (codigo criado, deploy PENDENTE)
+- Task 4.7: Confirmacao de presenca por email -- CONCLUIDA
+- Build: PASSA
+- TypeScript: PASSA
+- Testes: 375 passando, 1 pulado (376 total) -- SEM REGRESSAO (324 anteriores intactos + 52 novos)
+- Segredos: varredura limpa, nenhum segredo hardcoded
+
+### RPCs novas necessarias (Data Architect)
+- `create_session(p_patient_id, p_psychologist_id, p_scheduled_at, p_duration_minutes, p_recurrence_group_id)` -- INSERT na tabela sessions via SECURITY DEFINER (atualmente usando admin client)
+- `reschedule_session(p_session_id, p_new_scheduled_at)` -- UPDATE scheduled_at com validacao de ownership e status (atualmente usando admin client; trigger fn_sessions_on_reschedule ja regenera room_name)
+
+### Deploy pendente (Edge Function)
+- `supabase/functions/send-reminders/index.ts` -- deploy via `supabase functions deploy send-reminders`
+- Secrets necessarios: CRON_SECRET, RESEND_API_KEY_CRON, SITE_URL, EMAIL_FROM
+- Cron job: invocar a cada 15 minutos com `Authorization: Bearer <CRON_SECRET>`
+- Access token do Supabase nao configurado nesta maquina -- deploy requer acao do dev
+
+### Decisoes tomadas pelo agente (sem consulta)
+1. Sessions INSERT via admin client (service_role) ao inves de RPC nova -- conservador, funcional, reportado para Data Architect escrever a RPC
+2. Reschedule via admin client ao inves de RPC nova -- mesma razao
+3. Cancel via RPC existente cancel_session -- ja existia, usa diretamente
+4. Confirmation tokens no 24h reminder apenas (nao no 1h) -- 1h e muito tarde para confirmar/cancelar
+5. Cancellation via email token usa admin client diretamente (sem auth.uid()) porque e acao anonima de link
+6. Timezone: America/Sao_Paulo explicito em todas as formatacoes -- offset -03:00 para timestamptz
+7. tsconfig.json exclui supabase/functions/ (Deno, nao Node.js)
+
+### Pendencias tecnicas acumuladas
+- **F6 (WARNING):** Politica de senha no Supabase Auth dashboard NAO configurada
+- S1 (Sprint 2): middleware.ts deprecation
+- S4 (Sprint 2): ProfileForm exige CPF em toda edicao
+- S6 (Sprint 2): Sidebar mobile sem Vaul
+- S7 (Sprint 2): x-forwarded-for trust rule ausente
+- S10 (Sprint 2): Considerar wrapper withAuthenticatedUser
+- S11 (Sprint 2): eslint error em MfaSetup.tsx
+- .env.example: nao pude verificar conteudo (permissao bloqueada) -- pode necessitar CRON_SECRET, RESEND_API_KEY_CRON, SITE_URL se nao presente
+- W1 (QA Sprint 3): unused imports na Sprint 3
+- S3 (CR Sprint 3): documentar consumo de convite na allowlist do Architect
+- Deploy da Edge Function send-reminders PENDENTE
+
 ### Proximo passo
-Sprint 3 aprovada. Avancar para Sprint 4 -- Agenda & Lembretes. Primeira task da Sprint 4: extrair CURRENT_CONSENT_VERSION para modulo proprio (W3).
+Ativar Code Review para Sprint 4. Apos CR + QA aprovados, avancar para Sprint 5 -- Financeiro & Asaas.

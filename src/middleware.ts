@@ -11,6 +11,7 @@
  */
 import { type NextRequest, NextResponse } from "next/server"
 import { createMiddlewareClient } from "@/lib/supabase/middleware"
+import { CURRENT_CONSENT_VERSION } from "@/lib/consent-version"
 
 /** Routes that do not require authentication */
 const PUBLIC_PATHS = [
@@ -189,10 +190,9 @@ export async function middleware(request: NextRequest) {
           "lgpd_asaas",
         ]
 
-        // CURRENT_CONSENT_VERSION is imported inline to avoid adding
-        // a module dependency to middleware (which runs on every request).
-        // Keep in sync with @/schemas/consent.ts CURRENT_CONSENT_VERSION.
-        const CURRENT_VERSION = "1.0"
+        // Imported from @/lib/consent-version (zero-dependency canonical module).
+        // W3 fix: eliminates inline "1.0" that could diverge from schema.
+        const CURRENT_VERSION = CURRENT_CONSENT_VERSION
 
         const { data: consents } = await supabase
           .from("consents")

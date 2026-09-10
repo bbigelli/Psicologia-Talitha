@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { PatientBottomNav } from "@/components/layouts/PatientBottomNav"
 import { Header } from "@/components/layouts/Header"
 import { SkipToContent } from "@/components/layouts/SkipToContent"
+import { CURRENT_CONSENT_VERSION } from "@/lib/consent-version"
 
 /**
  * PatientLayout — guards patient routes with re-authorization.
@@ -38,8 +39,8 @@ export default async function PatientLayout({
   }
 
   // Defense-in-depth: verify consent status at current version.
-  // Keep CURRENT_VERSION in sync with @/schemas/consent.ts.
-  const CURRENT_VERSION = "1.0"
+  // W3 fix: imported from @/lib/consent-version (zero-dependency canonical module).
+  const CURRENT_VERSION = CURRENT_CONSENT_VERSION
 
   const { data: patient } = await supabase
     .from("patients")
