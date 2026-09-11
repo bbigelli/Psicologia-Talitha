@@ -24,11 +24,13 @@ export type ChargeStatus = (typeof CHARGE_STATUSES)[number]
 export const PAYMENT_METHODS = ["pix", "boleto", "credit_card"] as const
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number]
 
-/** Subscription statuses */
+/** Subscription statuses -- matches CHECK constraint after migration 19 */
 export const SUBSCRIPTION_STATUSES = [
+  "pending_creation",
   "active",
   "paused",
   "cancelled",
+  "creation_failed",
 ] as const
 export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number]
 

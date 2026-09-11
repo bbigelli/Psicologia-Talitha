@@ -1,9 +1,6 @@
-import Link from "next/link"
 import { Suspense } from "react"
-import { Plus } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
-import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import {
   SubscriptionList,
@@ -11,6 +8,7 @@ import {
   type SubscriptionListItem,
 } from "@/components/financial/SubscriptionList"
 import { SubscriptionForm } from "@/components/financial/SubscriptionForm"
+import { FinanceiroTabs } from "@/components/financial/FinanceiroTabs"
 
 /**
  * Subscriptions page — list + create form.
@@ -38,7 +36,7 @@ async function getSubscriptions(): Promise<SubscriptionListItem[]> {
     billing_day: sub.billing_day,
     sessions_per_cycle: sub.sessions_per_cycle,
     sessions_used_in_cycle: sub.sessions_used_in_cycle,
-    status: sub.status as "active" | "paused" | "cancelled",
+    status: sub.status as string,
     created_at: sub.created_at,
   }))
 }
@@ -63,34 +61,6 @@ async function SubscriptionListServer() {
 async function SubscriptionFormServer() {
   const patients = await getPatients()
   return <SubscriptionForm patients={patients} />
-}
-
-/**
- * Financeiro sub-navigation tabs.
- */
-function FinanceiroTabs() {
-  return (
-    <nav className="flex gap-1 border-b pb-1" aria-label="Financeiro">
-      <Link
-        href="/financeiro/cobrancas"
-        className="rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-muted"
-      >
-        Cobrancas
-      </Link>
-      <Link
-        href="/financeiro/assinaturas"
-        className="rounded-md bg-primary/10 px-3 py-1.5 text-sm font-medium text-primary"
-      >
-        Assinaturas
-      </Link>
-      <Link
-        href="/financeiro/inadimplentes"
-        className="rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-muted"
-      >
-        Inadimplentes
-      </Link>
-    </nav>
-  )
 }
 
 export default function AssinaturasPage() {

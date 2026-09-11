@@ -123,8 +123,8 @@ Deno.serve(async (req: Request) => {
     )
   }
 
-  // Must be active and not yet linked to Asaas
-  if (sub.status !== "active" || sub.asaas_subscription_id) {
+  // W1 FIX: Must be pending_creation and not yet linked to Asaas
+  if (sub.status !== "pending_creation" || sub.asaas_subscription_id) {
     return new Response(
       JSON.stringify({ error: "Operacao nao permitida" }),
       { status: 409, headers: { "Content-Type": "application/json" } },
@@ -139,59 +139,25 @@ Deno.serve(async (req: Request) => {
     )
   }
 
-  // --- Resolve Asaas customer ---
-  // Strategy: look up from previous charges, then search Asaas by patient email
-  let asaasCustomerId: string | null = null
-
-  // 1. Check existing charges for this patient
-  const { data: prevCharge } = await adminClient
-    .from("charges")
+  // --- B5 FIX: Resolve Asaas customer from patients.asaas_customer_id ---
+  // No email fallback. The Server Action must call manage-asaas-customer
+  // first, which writes patients.asaas_customer_id.
+  const { data: patient } = await adminClient
+    .from("patients")
     .select("asaas_customer_id")
-    .eq("patient_id", sub.patient_id)
-    .not("asaas_customer_id", "is", null)
-    .limit(1)
-    .maybeSingle()
+    .eq("id", sub.patient_id)
+    .single()
 
-  if (prevCharge?.asaas_customer_id) {
-    asaasCustomerId = prevCharge.asaas_customer_id
-  }
-
-  // 2. If not found, search Asaas by patient email
-  if (!asaasCustomerId) {
-    const { data: patient } = await adminClient
-      .from("patients")
-      .select("email")
-      .eq("id", sub.patient_id)
-      .single()
-
-    if (patient?.email) {
-      try {
-        const searchResp = await fetch(
-          `${asaasBaseUrl}/customers?email=${encodeURIComponent(patient.email)}`,
-          { headers: { access_token: asaasApiKey } },
-        )
-        if (searchResp.ok) {
-          const searchData = await searchResp.json()
-          if (searchData.data && searchData.data.length > 0) {
-            asaasCustomerId = searchData.data[0].id
-          }
-        }
-      } catch {
-        // Search failed — proceed to error
-      }
-    }
-  }
+  const asaasCustomerId = patient?.asaas_customer_id ?? null
 
   if (!asaasCustomerId) {
-    // Customer must be created first via manage-asaas-customer
-    // The Server Action should have called it before invoking this function
     return new Response(
       JSON.stringify({ error: "Servico indisponivel" }),
       { status: 500, headers: { "Content-Type": "application/json" } },
     )
   }
 
-  // --- Build neutral description ---
+  // --- W8 FIX: Use canonical description format ---
   const neutralDescription = "Prestacao de servicos profissionais - Pacote mensal"
 
   // --- Calculate next due date ---
@@ -240,10 +206,10 @@ Deno.serve(async (req: Request) => {
 
     const asaasSub = await createResp.json()
 
-    // --- Update subscription with Asaas data ---
+    // --- W1 FIX: Update subscription with Asaas data and transition to active ---
     const { error: updateError } = await adminClient
       .from("subscriptions")
-      .update({ asaas_subscription_id: asaasSub.id })
+      .update({ asaas_subscription_id: asaasSub.id, status: "active" })
       .eq("id", subscriptionId)
 
     if (updateError) {

@@ -18,8 +18,24 @@ import type { ChargeStatus } from "@/schemas/charge"
  * @see US-107
  */
 
+/**
+ * Derive the Asaas invoice base URL from the API base URL.
+ * W3 fix: no hardcoded sandbox URL.
+ *
+ * ASAAS_BASE_URL is a server-side env var (supabase secrets replicated
+ * to EasyPanel). If not available, we omit payment links entirely
+ * (safer than a wrong URL).
+ */
+function getAsaasInvoiceBase(): string | null {
+  const baseUrl = process.env.ASAAS_BASE_URL
+  if (!baseUrl) return null
+  if (baseUrl.includes("sandbox")) return "https://sandbox.asaas.com/i"
+  return "https://www.asaas.com/i"
+}
+
 async function getPatientCharges(): Promise<PatientCharge[]> {
   const supabase = await createClient()
+  const invoiceBase = getAsaasInvoiceBase()
 
   // RLS ensures patient sees only their own charges
   const { data } = await supabase
@@ -39,6 +55,10 @@ async function getPatientCharges(): Promise<PatientCharge[]> {
     status: charge.status as ChargeStatus,
     subscription_id: charge.subscription_id,
     asaas_payment_id: charge.asaas_payment_id,
+    invoice_url:
+      invoiceBase && charge.asaas_payment_id
+        ? `${invoiceBase}/${charge.asaas_payment_id}`
+        : null,
   }))
 }
 

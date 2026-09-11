@@ -9,6 +9,7 @@ import {
   ChargeTableSkeleton,
   type ChargeListItem,
 } from "@/components/financial/ChargeTable"
+import { FinanceiroTabs } from "@/components/financial/FinanceiroTabs"
 import type { ChargeStatus, PaymentMethod } from "@/schemas/charge"
 
 /**
@@ -21,12 +22,15 @@ import type { ChargeStatus, PaymentMethod } from "@/schemas/charge"
 async function getCharges(): Promise<ChargeListItem[]> {
   const supabase = await createClient()
 
+  // W5 FIX: limit to most recent 200 charges to avoid unbounded queries.
+  // For a solo practice (~1500/year), this covers recent history well.
   const { data } = await supabase
     .from("charges")
     .select(
       "id, amount, due_date, payment_method, status, created_at, asaas_payment_id, patient_id, patients(full_name)",
     )
     .order("created_at", { ascending: false })
+    .limit(200)
 
   if (!data) return []
 
@@ -46,34 +50,6 @@ async function getCharges(): Promise<ChargeListItem[]> {
 async function ChargeTableServer() {
   const charges = await getCharges()
   return <ChargeTable charges={charges} />
-}
-
-/**
- * Financeiro sub-navigation tabs (inline, not a separate component).
- */
-function FinanceiroTabs() {
-  return (
-    <nav className="flex gap-1 border-b pb-1" aria-label="Financeiro">
-      <Link
-        href="/financeiro/cobrancas"
-        className="rounded-md bg-primary/10 px-3 py-1.5 text-sm font-medium text-primary"
-      >
-        Cobrancas
-      </Link>
-      <Link
-        href="/financeiro/assinaturas"
-        className="rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-muted"
-      >
-        Assinaturas
-      </Link>
-      <Link
-        href="/financeiro/inadimplentes"
-        className="rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-muted"
-      >
-        Inadimplentes
-      </Link>
-    </nav>
-  )
 }
 
 export default function CobrancasPage() {

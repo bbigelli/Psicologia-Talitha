@@ -81,33 +81,20 @@ async function hasCommunicationConsent(
 }
 
 /**
- * Find existing Asaas customer ID from previous charges.
+ * Find existing Asaas customer ID from patients.asaas_customer_id.
+ * B5 fix: this is the primary and only source. No email fallback.
  */
 async function findExistingAsaasCustomer(
   supabase: ReturnType<typeof createAdminClient>,
   patientId: string,
 ): Promise<string | null> {
   const { data } = await supabase
-    .from("charges")
+    .from("patients")
     .select("asaas_customer_id")
-    .eq("patient_id", patientId)
-    .not("asaas_customer_id", "is", null)
-    .limit(1)
+    .eq("id", patientId)
+    .single()
 
-  if (data && data.length > 0 && data[0].asaas_customer_id) {
-    return data[0].asaas_customer_id
-  }
-
-  // Also check subscriptions
-  const { data: subs } = await supabase
-    .from("subscriptions")
-    .select("asaas_subscription_id")
-    .eq("patient_id", patientId)
-    .not("asaas_subscription_id", "is", null)
-    .limit(1)
-
-  // Subscriptions don't store customer_id directly, so this is just a fallback
-  return null
+  return data?.asaas_customer_id ?? null
 }
 
 /**
@@ -380,6 +367,24 @@ export const createSubscription = withPsychologist(
 
     // Insert subscription record locally
     const today = new Date()
+    // W1 FIX: Check for orphan pending_creation subscription for this patient.
+    // The unique partial index blocks INSERT if one exists -- mark it
+    // creation_failed first so the new attempt can proceed.
+    const { data: orphan } = await admin
+      .from("subscriptions")
+      .select("id")
+      .eq("patient_id", parsed.patient_id)
+      .eq("status", "pending_creation")
+      .maybeSingle()
+
+    if (orphan) {
+      await admin
+        .from("subscriptions")
+        .update({ status: "creation_failed" })
+        .eq("id", orphan.id)
+    }
+
+    // W1 FIX: Omit status -- use the DB default (pending_creation)
     const { data: subscription, error: insertError } = await admin
       .from("subscriptions")
       .insert({
@@ -388,7 +393,6 @@ export const createSubscription = withPsychologist(
         monthly_value: parsed.monthly_value,
         billing_day: parsed.billing_day,
         sessions_per_cycle: parsed.sessions_per_cycle,
-        status: "active",
         current_cycle_start: today.toISOString().split("T")[0],
       })
       .select("id")
@@ -420,12 +424,12 @@ export const createSubscription = withPsychologist(
         patient_id: parsed.patient_id,
         error_code: "EF_ERROR",
       })
-      // EF failed — cancel the subscription locally since the Asaas
-      // subscription was not created. Without the Asaas link, no
-      // recurring charges will be generated.
+      // W1 FIX: Mark as creation_failed (not cancelled).
+      // "creation_failed" = never existed on Asaas.
+      // "cancelled" = existed and was intentionally ended.
       await admin
         .from("subscriptions")
-        .update({ status: "cancelled" })
+        .update({ status: "creation_failed" })
         .eq("id", subscription.id)
 
       return {
@@ -447,7 +451,14 @@ export const createSubscription = withPsychologist(
 )
 
 /**
- * Cancel a subscription.
+ * Cancel a subscription -- propagates to Asaas via cancel-subscription EF.
+ *
+ * B4 fix: the Asaas cancellation happens FIRST (in the Edge Function).
+ * Local status is only updated after Asaas confirms. If Asaas is
+ * unavailable, the operation fails and the user sees an error --
+ * we never lie about the state.
+ *
+ * W6 fix: audit log via logAudit (not just logInfo).
  */
 export const cancelSubscription = withPsychologist(
   async (ctx, input: { subscription_id: string }) => {
@@ -455,12 +466,11 @@ export const cancelSubscription = withPsychologist(
       return { error: "Assinatura invalida" } as const
     }
 
+    // Verify ownership before calling EF (defense-in-depth; EF also checks)
     const admin = createAdminClient()
-
-    // Load subscription and verify ownership
     const { data: sub } = await admin
       .from("subscriptions")
-      .select("id, patient_id, psychologist_id, asaas_subscription_id, status")
+      .select("id, patient_id, psychologist_id, status")
       .eq("id", input.subscription_id)
       .single()
 
@@ -472,15 +482,27 @@ export const cancelSubscription = withPsychologist(
       return { error: "Assinatura ja cancelada" } as const
     }
 
-    // Update status locally
-    const { error: updateError } = await admin
-      .from("subscriptions")
-      .update({ status: "cancelled" })
-      .eq("id", sub.id)
+    // Call cancel-subscription EF -- it cancels on Asaas THEN updates locally
+    const { error: efError } = await ctx.supabase.functions.invoke(
+      "cancel-subscription",
+      { body: { subscription_id: sub.id } },
+    )
 
-    if (updateError) {
-      return { error: "Nao foi possivel cancelar a assinatura" } as const
+    if (efError) {
+      logError({
+        event_type: "cancel_subscription_ef_failure",
+        patient_id: sub.patient_id,
+        error_code: "EF_ERROR",
+      })
+      return {
+        error: "Nao foi possivel cancelar a assinatura. O servico de pagamento esta indisponivel.",
+      } as const
     }
+
+    // W6 fix: audit log in the audit trail (not just application log)
+    await logAudit(ctx.supabase, sub.patient_id, "CANCEL_SUBSCRIPTION", {
+      subscription_id: sub.id,
+    })
 
     logInfo({
       event_type: "subscription_cancelled",

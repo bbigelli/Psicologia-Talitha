@@ -1,4 +1,3 @@
-import Link from "next/link"
 import { Suspense } from "react"
 
 import { createClient } from "@/lib/supabase/server"
@@ -7,6 +6,7 @@ import {
   DefaultersListSkeleton,
   type DefaulterItem,
 } from "@/components/financial/DefaultersList"
+import { FinanceiroTabs } from "@/components/financial/FinanceiroTabs"
 
 /**
  * Defaulters page — patients with overdue charges.
@@ -22,11 +22,15 @@ async function getDefaulters(): Promise<DefaulterItem[]> {
   const supabase = await createClient()
 
   // Fetch all overdue charges with patient info
+  // W4 FIX: limit query to avoid unbounded result set.
+  // 500 overdue charges covers ~16 patients with 30 charges each,
+  // well above expected volume for a solo practice.
   const { data: charges } = await supabase
     .from("charges")
     .select("id, patient_id, amount, due_date, patients(full_name)")
     .eq("status", "overdue")
     .order("due_date", { ascending: true })
+    .limit(500)
 
   if (!charges || charges.length === 0) return []
 
@@ -71,34 +75,6 @@ async function getDefaulters(): Promise<DefaulterItem[]> {
 async function DefaultersServer() {
   const defaulters = await getDefaulters()
   return <DefaultersList defaulters={defaulters} />
-}
-
-/**
- * Financeiro sub-navigation tabs.
- */
-function FinanceiroTabs() {
-  return (
-    <nav className="flex gap-1 border-b pb-1" aria-label="Financeiro">
-      <Link
-        href="/financeiro/cobrancas"
-        className="rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-muted"
-      >
-        Cobrancas
-      </Link>
-      <Link
-        href="/financeiro/assinaturas"
-        className="rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-muted"
-      >
-        Assinaturas
-      </Link>
-      <Link
-        href="/financeiro/inadimplentes"
-        className="rounded-md bg-primary/10 px-3 py-1.5 text-sm font-medium text-primary"
-      >
-        Inadimplentes
-      </Link>
-    </nav>
-  )
 }
 
 export default function InadimplentesPage() {

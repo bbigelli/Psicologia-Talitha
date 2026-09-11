@@ -25,6 +25,8 @@ export interface PatientCharge {
   status: ChargeStatus
   subscription_id: string | null
   asaas_payment_id: string | null
+  /** W3 fix: computed server-side, never hardcoded */
+  invoice_url: string | null
 }
 
 function formatCurrency(value: number): string {
@@ -92,12 +94,12 @@ export function PatientPaymentHistory({
             <div className="flex flex-col items-end gap-2">
               <ChargeStatusBadge status={charge.status} />
 
-              {/* Action buttons based on status */}
+              {/* Action buttons based on status -- W3 fix: invoice_url from server */}
               {(charge.status === "pending" ||
                 charge.status === "pending_creation") &&
-                charge.asaas_payment_id && (
+                charge.invoice_url && (
                   <a
-                    href={`https://sandbox.asaas.com/i/${charge.asaas_payment_id}`}
+                    href={charge.invoice_url}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center rounded-md border border-input bg-background px-3 py-1 text-sm font-medium hover:bg-muted"
@@ -113,9 +115,9 @@ export function PatientPaymentHistory({
                 </Button>
               )}
 
-              {charge.status === "overdue" && charge.asaas_payment_id && (
+              {charge.status === "overdue" && charge.invoice_url && (
                   <a
-                    href={`https://sandbox.asaas.com/i/${charge.asaas_payment_id}`}
+                    href={charge.invoice_url}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center rounded-md border border-input bg-background px-3 py-1 text-sm font-medium text-destructive hover:bg-muted"

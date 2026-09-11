@@ -23,7 +23,7 @@ export interface SubscriptionListItem {
   billing_day: number
   sessions_per_cycle: number
   sessions_used_in_cycle: number
-  status: "active" | "paused" | "cancelled"
+  status: string
   created_at: string
 }
 
@@ -35,15 +35,19 @@ function formatCurrency(value: number): string {
 }
 
 const STATUS_LABELS: Record<string, string> = {
+  pending_creation: "Processando",
   active: "Ativa",
   paused: "Pausada",
   cancelled: "Cancelada",
+  creation_failed: "Falha na criacao",
 }
 
-const STATUS_VARIANTS: Record<string, "default" | "secondary" | "outline"> = {
+const STATUS_VARIANTS: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
+  pending_creation: "secondary",
   active: "default",
   paused: "secondary",
   cancelled: "outline",
+  creation_failed: "destructive",
 }
 
 interface SubscriptionCardProps {

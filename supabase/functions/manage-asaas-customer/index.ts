@@ -5,6 +5,10 @@
  * Called by the Server Action BEFORE create-charge, so that
  * create-charge only needs charge_id (AC1 requirement).
  *
+ * After creating/finding the customer, writes the asaas_customer_id
+ * to patients.asaas_customer_id (B5 fix). All subsequent lookups
+ * read from that column -- no email fallback.
+ *
  * Security:
  * - verify_jwt = true (Supabase validates JWT)
  * - Role checked in DB (profiles.role = 'psychologist')
@@ -12,8 +16,9 @@
  * - CPF received from Server Action (which decrypted it with KEK)
  * - ASAAS_API_KEY stays in Edge Function domain
  *
- * @see architecture.md §8.1
+ * @see architecture.md section 8.1
  * @see security-review-architecture.md AC1
+ * @see data-architecture v1.8 (patients.asaas_customer_id)
  */
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
@@ -95,7 +100,7 @@ Deno.serve(async (req: Request) => {
   // Validate patient belongs to this psychologist
   const { data: patient } = await adminClient
     .from("patients")
-    .select("id, psychologist_id")
+    .select("id, psychologist_id, asaas_customer_id")
     .eq("id", body.patient_id)
     .single()
 
@@ -106,20 +111,36 @@ Deno.serve(async (req: Request) => {
     )
   }
 
-  // --- Check if customer already exists on Asaas ---
-  // Search by CPF first (prevents duplicate customers)
+  // B5 FIX: If patient already has an asaas_customer_id, return it directly
+  if (patient.asaas_customer_id) {
+    return new Response(
+      JSON.stringify({ customer_id: patient.asaas_customer_id }),
+      { headers: { "Content-Type": "application/json" } },
+    )
+  }
+
+  // Helper: persist customer_id to patients.asaas_customer_id
+  async function persistCustomerId(customerId: string): Promise<void> {
+    await adminClient
+      .from("patients")
+      .update({ asaas_customer_id: customerId })
+      .eq("id", body.patient_id)
+    // Non-critical if update fails: customer exists on Asaas,
+    // next call will search by CPF again and retry the write.
+  }
+
+  // --- Search Asaas by CPF (deterministic, no email fallback) ---
   try {
     const searchResp = await fetch(
       `${asaasBaseUrl}/customers?cpfCnpj=${body.cpf}`,
-      {
-        headers: { access_token: asaasApiKey },
-      },
+      { headers: { access_token: asaasApiKey } },
     )
 
     if (searchResp.ok) {
       const searchData = await searchResp.json()
       if (searchData.data && searchData.data.length > 0) {
         const existingCustomer = searchData.data[0]
+        await persistCustomerId(existingCustomer.id)
         return new Response(
           JSON.stringify({ customer_id: existingCustomer.id }),
           { headers: { "Content-Type": "application/json" } },
@@ -127,7 +148,7 @@ Deno.serve(async (req: Request) => {
       }
     }
   } catch {
-    // Search failed — proceed to create
+    // Search failed -- proceed to create
   }
 
   // --- Create customer on Asaas ---
@@ -154,6 +175,7 @@ Deno.serve(async (req: Request) => {
     }
 
     const customerData = await createResp.json()
+    await persistCustomerId(customerData.id)
     return new Response(
       JSON.stringify({ customer_id: customerData.id }),
       { headers: { "Content-Type": "application/json" } },

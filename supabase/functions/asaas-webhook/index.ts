@@ -3,21 +3,19 @@
  *
  * Receives and processes Asaas payment webhooks.
  *
- * Four mandatory rules (security-review-architecture.md §6):
+ * Four mandatory rules (security-review-architecture.md):
  * 1. Validate authToken with timingSafeEqual BEFORE any parsing
- * 2. Payload is NOT authoritative — re-consult GET /v3/payments/{id}
- * 3. Idempotency via asaas_event_id PK with ON CONFLICT DO NOTHING
- * 4. No raw payload persisted — allowlist columns only, no CPF/name
+ * 2. Payload is NOT authoritative -- re-consult GET /v3/payments/{id}
+ * 3. Idempotency via asaas_event_id PK (deterministic key, no Date.now)
+ * 4. No raw payload persisted -- allowlist columns only, no CPF/name
  *
- * Processed events:
- * - PAYMENT_RECEIVED  → charge.status = 'paid'
- * - PAYMENT_OVERDUE   → charge.status = 'overdue'
- * - PAYMENT_REFUNDED  → charge.status = 'refunded'
+ * Subscription charges:
+ * When a payment belongs to an Asaas subscription but no local charge
+ * exists, the webhook creates a charge record linked to the local
+ * subscription. The subscription field comes from the SAME re-consult
+ * (Rule 2) -- no second API call.
  *
- * Monotonic state machine enforced by DB trigger (fn_charges_monotonic_status).
- * Out-of-order webhooks that would regress status are silently ignored.
- *
- * @see architecture.md §8.1
+ * @see architecture.md section 8.1
  * @see ADR-0003
  * @see CLAUDE.md (payload nao e autoritativo)
  */
@@ -26,10 +24,6 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
 
 // --- Security ---
 
-/**
- * Timing-safe comparison to prevent timing attacks on webhook token.
- * MUST be called BEFORE any JSON parsing of the payload.
- */
 function timingSafeEqual(a: string, b: string): boolean {
   const encoder = new TextEncoder()
   const bufA = encoder.encode(a)
@@ -44,7 +38,7 @@ function timingSafeEqual(a: string, b: string): boolean {
   return result === 0
 }
 
-/** Map Asaas event types to our charge statuses */
+/** Events we process -- mapped to our charge statuses */
 const EVENT_STATUS_MAP: Record<string, string> = {
   PAYMENT_RECEIVED: "paid",
   PAYMENT_CONFIRMED: "paid",
@@ -54,8 +48,25 @@ const EVENT_STATUS_MAP: Record<string, string> = {
   PAYMENT_CHARGEBACK_DISPUTE: "chargeback",
 }
 
-/** Events we actually process */
 const HANDLED_EVENTS = new Set(Object.keys(EVENT_STATUS_MAP))
+
+/** Map Asaas authoritative status to our status */
+const ASAAS_STATUS_MAP: Record<string, string> = {
+  RECEIVED: "paid",
+  CONFIRMED: "paid",
+  OVERDUE: "overdue",
+  REFUNDED: "refunded",
+  REFUND_REQUESTED: "refunded",
+  CHARGEBACK_REQUESTED: "chargeback",
+  CHARGEBACK_DISPUTE: "chargeback",
+}
+
+/** Map Asaas billing type to our payment_method */
+const BILLING_TYPE_MAP: Record<string, string> = {
+  PIX: "pix",
+  BOLETO: "boleto",
+  CREDIT_CARD: "credit_card",
+}
 
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
@@ -68,10 +79,8 @@ Deno.serve(async (req: Request) => {
     return new Response("Server misconfigured", { status: 500 })
   }
 
-  // Asaas sends the token in the 'asaas-access-token' header
   const providedToken = req.headers.get("asaas-access-token") ?? ""
   if (!timingSafeEqual(providedToken, webhookToken)) {
-    // Audit: rejected webhook
     try {
       const supabaseUrl = Deno.env.get("SUPABASE_URL")!
       const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
@@ -84,18 +93,18 @@ Deno.serve(async (req: Request) => {
         p_metadata: JSON.stringify({ reason: "invalid_token" }),
       })
     } catch {
-      // Audit failure should not change the response
+      // Audit failure must not change the response
     }
     return new Response("Unauthorized", { status: 401 })
   }
 
   // --- Parse body (only AFTER auth validation) ---
   let payload: {
+    id?: string
     event?: string
     payment?: { id?: string }
   }
   try {
-    // Limit body size to 64KB (architecture §8.1)
     const bodyText = await req.text()
     if (bodyText.length > 65536) {
       return new Response("Payload too large", { status: 413 })
@@ -108,17 +117,30 @@ Deno.serve(async (req: Request) => {
   const eventType = payload.event
   const paymentIdFromPayload = payload.payment?.id
 
-  if (!eventType || !paymentIdFromPayload) {
-    return new Response(JSON.stringify({ received: true }), {
-      headers: { "Content-Type": "application/json" },
-    })
+  // --- B2 FIX: Distinguish unhandled events from malformed handled events ---
+  // No event type at all -- nothing to do
+  if (!eventType) {
+    return new Response(
+      JSON.stringify({ received: true }),
+      { headers: { "Content-Type": "application/json" } },
+    )
   }
 
-  // Skip events we don't handle
+  // Event type we do not handle -- 200 is correct (we don't want retries)
   if (!HANDLED_EVENTS.has(eventType)) {
-    return new Response(JSON.stringify({ received: true, skipped: true }), {
-      headers: { "Content-Type": "application/json" },
-    })
+    return new Response(
+      JSON.stringify({ received: true, skipped: true }),
+      { headers: { "Content-Type": "application/json" } },
+    )
+  }
+
+  // Handled event but missing payment.id -- malformed payload we SHOULD
+  // have been able to process. Return 422 so Asaas retries.
+  if (!paymentIdFromPayload) {
+    return new Response(
+      JSON.stringify({ error: "Missing payment.id for handled event" }),
+      { status: 422, headers: { "Content-Type": "application/json" } },
+    )
   }
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!
@@ -127,13 +149,15 @@ Deno.serve(async (req: Request) => {
   const asaasBaseUrl = Deno.env.get("ASAAS_BASE_URL")!
   const adminClient = createClient(supabaseUrl, serviceRoleKey)
 
-  // --- RULE 3: Idempotency check ---
-  // Generate a unique event ID from the payment ID + event type
-  // Asaas doesn't always send a unique event ID, so we construct one
-  const asaasEventId = `${paymentIdFromPayload}_${eventType}_${Date.now()}`
+  // --- B1 FIX: Deterministic idempotency key ---
+  // Use the webhook event ID from the payload if available.
+  // If Asaas does not send one, derive from payment_id + event_type.
+  // NEVER use Date.now() -- it makes every delivery unique.
+  const asaasEventId = payload.id
+    ? String(payload.id)
+    : `${paymentIdFromPayload}_${eventType}`
 
-  // Try to insert — ON CONFLICT DO NOTHING
-  // If the insert returns no row, the event was already processed
+  // --- RULE 3: Idempotency via PK ---
   const { data: insertedEvent, error: insertError } = await adminClient
     .from("payment_webhook_events")
     .insert({
@@ -146,14 +170,12 @@ Deno.serve(async (req: Request) => {
     .single()
 
   if (insertError) {
-    // If it's a duplicate key error, the event was already processed
     if (insertError.code === "23505") {
       return new Response(
         JSON.stringify({ received: true, duplicate: true }),
         { headers: { "Content-Type": "application/json" } },
       )
     }
-    // Other errors — return 500 so Asaas retries
     return new Response("Internal error", { status: 500 })
   }
 
@@ -165,55 +187,43 @@ Deno.serve(async (req: Request) => {
   }
 
   // --- RULE 2: Re-consult Asaas API (payload NOT authoritative) ---
-  let authoritativeStatus: string
-  let authoritativeValue: number | null = null
-  let authoritativeDueDate: string | null = null
+  // W9 FIX: Store the full response so we can read subscription/customer
+  // fields without a second API call.
+  let verifiedPayment: Record<string, unknown> | null = null
 
   try {
     const verifyResp = await fetch(
       `${asaasBaseUrl}/payments/${paymentIdFromPayload}`,
-      {
-        headers: { access_token: asaasApiKey },
-      },
+      { headers: { access_token: asaasApiKey } },
     )
 
     if (!verifyResp.ok) {
-      // Can't verify — mark event as failed, return 500 for retry
       await adminClient
         .from("payment_webhook_events")
         .update({ result: "verification_failed" })
         .eq("asaas_event_id", asaasEventId)
-
       return new Response("Verification failed", { status: 500 })
     }
 
-    const verifiedPayment = await verifyResp.json()
-    authoritativeStatus = verifiedPayment.status
-    authoritativeValue = verifiedPayment.value ?? null
-    authoritativeDueDate = verifiedPayment.dueDate ?? null
+    verifiedPayment = await verifyResp.json()
   } catch {
     await adminClient
       .from("payment_webhook_events")
       .update({ result: "verification_error" })
       .eq("asaas_event_id", asaasEventId)
-
     return new Response("Verification error", { status: 500 })
   }
 
-  // Map Asaas status to our status
-  const asaasStatusMap: Record<string, string> = {
-    RECEIVED: "paid",
-    CONFIRMED: "paid",
-    OVERDUE: "overdue",
-    REFUNDED: "refunded",
-    REFUND_REQUESTED: "refunded",
-    CHARGEBACK_REQUESTED: "chargeback",
-    CHARGEBACK_DISPUTE: "chargeback",
-  }
+  const authoritativeStatus = String(verifiedPayment.status ?? "")
+  const authoritativeValue =
+    typeof verifiedPayment.value === "number" ? verifiedPayment.value : null
+  const authoritativeDueDate =
+    typeof verifiedPayment.dueDate === "string"
+      ? verifiedPayment.dueDate
+      : null
 
-  const newStatus = asaasStatusMap[authoritativeStatus]
+  const newStatus = ASAAS_STATUS_MAP[authoritativeStatus]
   if (!newStatus) {
-    // Status doesn't map to a handled transition
     await adminClient
       .from("payment_webhook_events")
       .update({
@@ -231,7 +241,7 @@ Deno.serve(async (req: Request) => {
     )
   }
 
-  // --- Find the charge by asaas_payment_id ---
+  // --- Find or create the local charge ---
   let charge: { id: string; patient_id: string; status: string } | null = null
 
   const { data: existingCharge } = await adminClient
@@ -243,37 +253,21 @@ Deno.serve(async (req: Request) => {
   if (existingCharge) {
     charge = existingCharge
   } else {
-    // Charge not found locally. This may be a subscription-generated charge
-    // from Asaas. The authoritative payment data (from Rule 2 re-consult)
-    // includes a `subscription` field if the payment belongs to a subscription.
-    // We need to re-read the full payment to get the subscription field.
-    let asaasSubscriptionId: string | null = null
-    let asaasCustomerId: string | null = null
-    let paymentMethod: string | null = null
-
-    try {
-      const fullPaymentResp = await fetch(
-        `${asaasBaseUrl}/payments/${paymentIdFromPayload}`,
-        { headers: { access_token: asaasApiKey } },
-      )
-      if (fullPaymentResp.ok) {
-        const fullPayment = await fullPaymentResp.json()
-        asaasSubscriptionId = fullPayment.subscription || null
-        asaasCustomerId = fullPayment.customer || null
-        // Map Asaas billing type to our payment method
-        const billingMap: Record<string, string> = {
-          PIX: "pix",
-          BOLETO: "boleto",
-          CREDIT_CARD: "credit_card",
-        }
-        paymentMethod = billingMap[fullPayment.billingType] || null
-      }
-    } catch {
-      // Re-consult failed — we already have the data from the first re-consult
-    }
+    // W9 FIX: Use fields from the SAME re-consult response (no second call)
+    const asaasSubscriptionId =
+      typeof verifiedPayment.subscription === "string"
+        ? verifiedPayment.subscription
+        : null
+    const asaasCustomerId =
+      typeof verifiedPayment.customer === "string"
+        ? verifiedPayment.customer
+        : null
+    const paymentMethod =
+      typeof verifiedPayment.billingType === "string"
+        ? BILLING_TYPE_MAP[verifiedPayment.billingType] ?? null
+        : null
 
     if (asaasSubscriptionId) {
-      // Look up our subscription by asaas_subscription_id
       const { data: localSub } = await adminClient
         .from("subscriptions")
         .select("id, patient_id, psychologist_id")
@@ -281,7 +275,15 @@ Deno.serve(async (req: Request) => {
         .maybeSingle()
 
       if (localSub) {
-        // Create a local charge record for this subscription-generated payment
+        // W8 FIX: Use canonical description format with Ref. MM/AAAA
+        const refDate = authoritativeDueDate
+          ? new Date(authoritativeDueDate + "T12:00:00Z")
+          : new Date()
+        const monthYear = refDate.toLocaleDateString("pt-BR", {
+          month: "2-digit",
+          year: "numeric",
+        })
+
         const { data: newCharge, error: createError } = await adminClient
           .from("charges")
           .insert({
@@ -291,17 +293,20 @@ Deno.serve(async (req: Request) => {
             asaas_payment_id: paymentIdFromPayload,
             asaas_customer_id: asaasCustomerId,
             amount: authoritativeValue ?? 0,
-            due_date: authoritativeDueDate ?? new Date().toISOString().split("T")[0],
+            due_date:
+              authoritativeDueDate ??
+              new Date().toISOString().split("T")[0],
             payment_method: paymentMethod,
-            description: "Prestacao de servicos profissionais - Pacote mensal",
+            description: `Prestacao de servicos profissionais - Ref. ${monthYear}`,
             status: "pending",
           })
           .select("id, patient_id, status")
           .single()
 
+        // B3 FIX: Distinguish duplicate key from other INSERT errors
         if (createError || !newCharge) {
-          // INSERT failed — could be duplicate asaas_payment_id (UNIQUE)
-          // or another constraint. Log and return 200.
+          const isDuplicate = createError?.code === "23505"
+
           await adminClient
             .from("payment_webhook_events")
             .update({
@@ -309,22 +314,40 @@ Deno.serve(async (req: Request) => {
               value: authoritativeValue,
               due_date: authoritativeDueDate,
               processed_at: new Date().toISOString(),
-              result: "subscription_charge_create_failed",
+              result: isDuplicate
+                ? "subscription_charge_duplicate"
+                : "subscription_charge_create_failed",
             })
             .eq("asaas_event_id", asaasEventId)
 
-          return new Response(
-            JSON.stringify({ received: true, subscription_charge_create_failed: true }),
-            { headers: { "Content-Type": "application/json" } },
-          )
-        }
+          if (isDuplicate) {
+            // Charge already exists (by asaas_payment_id UNIQUE) -- 200
+            // Re-fetch it so we can still update its status below
+            const { data: dupCharge } = await adminClient
+              .from("charges")
+              .select("id, patient_id, status")
+              .eq("asaas_payment_id", paymentIdFromPayload)
+              .maybeSingle()
 
-        charge = newCharge
+            if (dupCharge) {
+              charge = dupCharge
+            } else {
+              return new Response(
+                JSON.stringify({ received: true, duplicate: true }),
+                { headers: { "Content-Type": "application/json" } },
+              )
+            }
+          } else {
+            // Genuine DB error -- return 500 so Asaas retries
+            return new Response("Internal error", { status: 500 })
+          }
+        } else {
+          charge = newCharge
+        }
       }
     }
 
     if (!charge) {
-      // Not a subscription charge either — genuinely not found
       await adminClient
         .from("payment_webhook_events")
         .update({
@@ -344,8 +367,6 @@ Deno.serve(async (req: Request) => {
   }
 
   // --- Update charge status ---
-  // The monotonic trigger (fn_charges_monotonic_status) will reject
-  // invalid transitions. Out-of-order webhooks are handled gracefully.
   const updateFields: Record<string, unknown> = { status: newStatus }
   if (newStatus === "paid") {
     updateFields.paid_at = new Date().toISOString()
@@ -361,7 +382,6 @@ Deno.serve(async (req: Request) => {
 
   let result = "processed"
   if (updateError) {
-    // Check if it's a monotonic violation (expected for out-of-order)
     if (updateError.message?.includes("Invalid charge status transition")) {
       result = "monotonic_skip"
     } else {
