@@ -1,4 +1,43 @@
 # Status: talitha-psicologia
+
+> ## RETOMADA — sessão de 2026-09-10 encerrada aqui
+>
+> **Onde paramos:** Sprint 5 (Financeiro e Asaas) implementada e corrigida. Os 5 blockers do Code Review foram resolvidos e as Edge Functions redeployadas. **O re-review da rodada 2 estava em execução quando a sessão encerrou** — o veredicto não chegou.
+>
+> ### PRIMEIRA AÇÃO ao retomar
+> 1. Rodar o **Code Review rodada 2 da Sprint 5** (o anterior não concluiu). Foco: se o Asaas realmente reenvia webhook nos códigos 422 e 500 que o Stack Agent escolheu — se ele só reenviar em 5xx, a correção do B2 é ilusória.
+> 2. Rodar o **QA da Sprint 5** — nunca rodou. O teste que importa: criar cobrança no sandbox, confirmar o pagamento pelo botão do Asaas, e verificar se o webhook chega e concilia. Todo o resto do módulo financeiro depende disso funcionar.
+> 3. Só então **mergear na `main`** e abrir a Sprint 6.
+>
+> ### NÃO mergear a Sprint 5 na main antes do veredicto
+> A branch `feature/sprint-5-financial` tem 7 commits e está no GitHub. A `main` tem 49 commits com as Sprints 1 a 4 aprovadas. Mergear sem o re-review quebraria o fluxo que encontrou 14 bugs de segurança nesta sessão — inclusive os 5 blockers desta própria sprint.
+>
+> ### Estado da infraestrutura (tudo funcionando e validado por execução)
+> | Item | Estado |
+> |---|---|
+> | Migrations | **21 aplicadas** no Supabase real |
+> | Edge Functions | **8 deployadas**: send-reminders, asaas-webhook, create-charge, create-subscription, cancel-subscription, manage-asaas-customer, retry-charges, billing-rules |
+> | Cron (pg_cron) | **3 jobs ativos** — lembretes 15min, régua 9h BRT, cleanup diário. Timeout de 30s (cold start estourava os 5s default) |
+> | Webhook Asaas | **Registrado no sandbox**, 6 eventos, authToken configurado |
+> | Política de senha | mín. 10 + letra + dígito aplicados. HIBP fora (exige plano Pro) |
+> | Testes | **422 passando** |
+>
+> ### Pendências de schema reportadas e NÃO resolvidas
+> - `charges.invoice_url TEXT` — para guardar a URL de pagamento que o Asaas retorna, em vez de derivar
+> - `subscriptions.payment_method TEXT` — o W7 ficou parcial; a EF usa PIX fixo até a coluna existir
+>
+> ### Pendências do dev (não bloqueiam as sprints)
+> - Recolocar no `credentials.md`: login das contas LiveKit e Resend, e o SIP URI (perdidos na sobrescrita do script na Sprint 2)
+> - Trocar a senha de login da conta Resend (apareceu no transcript)
+> - **Access token do Supabase vence 31/12** — depois disso, deploy de Edge Function e `secrets set` param de funcionar
+>
+> ### Próximas sprints
+> **6 — Vídeo (LiveKit).** A que o cliente mais quis. Tem o gate mais rigoroso do projeto: o teste (a)–(g) que prova que o paciente A não entra na sala do paciente B. Esse gate **bloqueia** a sprint. Os secrets do LiveKit já estão configurados no Supabase.
+> **7 — Prontuário.** Primeiro uso clínico real do envelope encryption. O `envelopeToBytea` já existe e tem teste de round-trip.
+> **8 — Dashboard, recibos e deploy.** Inclui as pendências diferidas: `pending` órfão no retry de lembrete, claim atômico, batch limit da Edge Function.
+
+---
+
 ## Fase atual: Execucao -- Sprint 5 CODE REVIEW REPROVADO (5B 10W 5S)
 ## Ultimo agente: Code Reviewer (Sprint 5)
 ## Branch: feature/sprint-5-financial
