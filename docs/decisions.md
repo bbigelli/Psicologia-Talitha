@@ -138,3 +138,13 @@ Registro de decisões de produto, arquitetura e técnicas. Ver `~/.claude/CLAUDE
 **Alternativa descartada:** gerar tokens novos no retry e invalidar os antigos — mais código e mais superfície de erro, para um caso que só ocorre quando o primeiro envio falhou.
 **Consequência aceita:** quem recebe apenas o retry perde a conveniência do "confirmar em um clique", que é parte do que reduz no-show. Revisitar se a taxa de no-show na prática mostrar que importa.
 **Escopo:** Edge Function `send-reminders`.
+
+### [2026-09-10] Política de senha aplicada; verificação de senha vazada não (requer plano Pro)
+**Contexto:** O QA da Sprint 2 provou que o Supabase aceitava senha de 7 caracteres e `Password123!` (notoriamente vazada). A DoD da Sprint 2 exigia mínimo de 10 caracteres e proteção contra senha vazada.
+**Aplicado via Management API:** `password_min_length` de **6 para 10**, e `password_required_characters` exigindo **ao menos uma letra e um dígito**. Confirmado lendo a config de volta do servidor.
+**Alinhamento deliberado:** não exigi maiúscula separadamente, para casar com o que o zod do app já valida. Servidor mais restritivo que o formulário faria o usuário passar na validação do cliente e falhar no servidor com mensagem confusa.
+**Não aplicado:** `password_hibp_enabled` (checagem contra HaveIBeenPwned). A Management API retornou **HTTP 402** — o recurso exige plano Pro (~US$ 25/mês) e o projeto está no Free.
+**Risco avaliado e aceito:** a Talitha é a única usuária com acesso a dado clínico e tem **MFA TOTP obrigatório**. Uma senha vazada, isoladamente, não dá acesso — o segundo fator barra. O mínimo de 10 caracteres com letra e dígito cobre o caso comum de senha trivial.
+**Revisar se:** o projeto subir para Pro por outro motivo (o backup diário de 7 dias do Pro é argumento mais forte, dado que o prontuário tem retenção legal de 5 anos); ou se o portal do paciente crescer para muitos usuários sem MFA, onde senha vazada passa a ser o vetor principal.
+**Alternativa disponível:** validar contra a API pública do HaveIBeenPwned no próprio cadastro (gratuita, usa k-anonymity, a senha nunca sai do servidor). Descartada por ora para não manter código próprio onde o provedor resolve.
+**Escopo:** Autenticação.
