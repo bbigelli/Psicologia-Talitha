@@ -1,6 +1,6 @@
 # Data Architecture: Talitha Psicologia
 
-**Versao:** 1.9
+**Versao:** 2.1
 **Data:** 2026-09-09
 **Referencia:** `docs/talitha-architecture.md` (v1.1, secao 17), `docs/talitha-security-review-architecture.md` (secao 4), `docs/talitha-security-review-schema.md` (patches A1-A4, M1, B1-B2, R19), `docs/talitha-security-review-prd.md`, `docs/talitha-prd.md` (emendas E1-E8), `docs/adr/ADR-0001..0006`, `CLAUDE.md`, `docs/decisions.md`
 
@@ -203,6 +203,7 @@ UNIQUE constraints de banco para idempotencia.
 | `fn_sessions_on_reschedule` | sessions | BEFORE UPDATE | Regenera room_name, zera waiting/admitted |
 | `fn_charges_monotonic_status` | charges | BEFORE UPDATE OF status | Impede regressao de status |
 | `fn_subscriptions_monotonic_status` | subscriptions | BEFORE UPDATE OF status | Maquina de estados monotonica para assinaturas |
+| `fn_cron_invoke_edge_function` | -- | -- | Le CRON_SECRET do Vault + URL e chama Edge Function via net.http_post. So postgres (cron) |
 | `fn_patients_set_retention` | patients | BEFORE UPDATE | A2: auto-calcula retention_until, impede reducao |
 | `fn_block_delete_patient_retention` | patients | BEFORE DELETE | Bloqueia DELETE de paciente durante retencao (lê treatment_ended_at direto) |
 | `fn_block_delete_clinical_retention` | clinical_records, anamnesis, remote_viability | BEFORE DELETE | N1: bloqueia DELETE clinico durante retencao (resolve treatment_ended_at via patient_id JOIN) |
@@ -244,6 +245,24 @@ UNIQUE constraints de banco para idempotencia.
 
 ---
 
+
+## pg_cron Jobs (Requisito 30)
+
+| Job | Cron | UTC | BRT | Edge Function | Idempotencia |
+|-----|------|-----|-----|---------------|---------------|
+| `send-reminders` | `*/15 * * * *` | cada 15 min | idem | send-reminders | UNIQUE(session_id, reminder_type) |
+| `billing-rules` | `0 12 * * *` | 12h UTC | **9h BRT** | billing-rules | UNIQUE(charge_id, step) |
+| `cron-cleanup` | `0 3 * * *` | 3h UTC | 0h BRT | -- (local SQL) | DELETE idempotente |
+
+**Fuso:** pg_cron roda em UTC (timezone do banco Supabase). "9h BRT" = "12h UTC" (UTC-3).
+
+**CRON_SECRET no Vault** (Req 30): lido por `fn_cron_invoke_edge_function` de `vault.decrypted_secrets`. Valor nunca no Git — populado pelo operador via `vault.create_secret` apos aplicar a migration.
+
+
+**Timeout:** `net.http_post` com `timeout_milliseconds := 30000` (30s). O default de 5s estourava em cold start de Edge Functions (~5s para boot do isolate Deno). 30s cobre cold start com margem larga e esta dentro do limite de execucao do Supabase (60s Pro, 26s free). A chamada e assincrona — o timeout nao bloqueia a conexao do banco.
+**Falha silenciosa:** `net.http_post` e assincrono — o job sempre "sucede" (o POST foi enfileirado). Se a Edge Function retornar 500, o erro esta em `net._http_response`, nao em `cron.job_run_details`. A auditoria de erros e responsabilidade interna das proprias Edge Functions (que registram falhas via `log_audit_system`).
+
+**Limpeza:** job `cron-cleanup` purga `cron.job_run_details` > 7 dias diariamente. Sem isso a tabela cresce indefinidamente.
 ## Verificacoes Executaveis (v1.1)
 
 ### V1-V6 (originais, inalteradas)
@@ -493,6 +512,56 @@ INSERT INTO subscriptions (patient_id, psychologist_id, monthly_value, billing_d
 VALUES ('<patient_id>', '<psych_id>', 800, 10, 4);
 -- ESPERADO: sucesso (status default pending_creation, UNIQUE parcial permite)
 ```
+
+### V23. Jobs cron agendados e Vault secrets acessiveis
+
+```sql
+-- Jobs registrados
+SELECT jobname, schedule, active FROM cron.job ORDER BY jobname;
+-- ESPERADO: 3 linhas (billing-rules, cron-cleanup, send-reminders), active=true
+
+-- Vault secrets acessiveis (nao revela o valor, so confirma existencia)
+SELECT name FROM vault.decrypted_secrets
+WHERE name IN ('cron_secret', 'supabase_functions_url');
+-- ESPERADO: 2 linhas
+```
+
+### V24. Historico de execucao dos jobs cron
+
+```sql
+-- Ultimas execucoes com status (observabilidade)
+SELECT j.jobname, d.status, d.start_time, d.end_time,
+       d.return_message
+FROM cron.job_run_details d
+JOIN cron.job j ON j.jobid = d.jobid
+ORDER BY d.start_time DESC
+LIMIT 20;
+-- ESPERADO: linhas com status 'succeeded' para cada job que ja rodou
+-- NOTA: 'succeeded' significa que o POST foi enfileirado, nao que a
+-- Edge Function retornou 200. Para o HTTP status real, consultar:
+SELECT id, status_code, created FROM net._http_response
+ORDER BY created DESC LIMIT 20;
+```
+
+### V25. Disparos cron com falha nas ultimas 24h
+
+```sql
+-- Mostra dispatches que deram timeout ou HTTP >= 400 nas ultimas 24h.
+-- Responde "os lembretes estao saindo?" sem adivinhar.
+SELECT
+  r.id,
+  r.url,
+  r.status_code,
+  r.timed_out,
+  r.created
+FROM net._http_response r
+WHERE r.created > now() - interval '24 hours'
+  AND (r.timed_out = true OR r.status_code >= 400 OR r.status_code IS NULL)
+ORDER BY r.created DESC;
+-- ESPERADO: 0 linhas (todos os dispatches retornaram 2xx dentro do timeout)
+-- Se houver linhas: investigar se e cold start residual (timed_out=true
+-- com status_code NULL) ou erro da function (status_code >= 400).
+```
 ---
 
 ## Decisoes (v1.9)
@@ -536,8 +605,10 @@ VALUES ('<patient_id>', '<psych_id>', 800, 10, 4);
 | `20260909121600_rpc_create_reschedule_session.sql` | `create_session` + `reschedule_session` RPCs SD. Conflito de horario por overlap de intervalo. REVOKE triplo |
 | `20260909121700_add_asaas_customer_id.sql` | `patients.asaas_customer_id TEXT UNIQUE`. D11 Interno, sem cifra. Escrito por service_role. Excluido do SELECT grant. Eliminavel |
 | `20260909121800_subscriptions_pending_creation.sql` | `pending_creation` + `creation_failed` em subscriptions. Default `pending_creation`. UNIQUE parcial (live only). Trigger monotonic state machine |
+| `20260909121900_cron_jobs.sql` | pg_cron + supabase_vault. fn_cron_invoke_edge_function. Jobs: send-reminders (*/15), billing-rules (0 12 UTC = 9h BRT), cron-cleanup (7d). CRON_SECRET no Vault (R30) |
+| `20260909122000_patch_cron_timeout.sql` | `timeout_milliseconds := 30000` em fn_cron_invoke_edge_function. Cold start de Edge Function estourava default de 5s |
 
-**18 migrations aplicadas. Migration 19 (subscriptions pending_creation) pendente.
+**20 migrations aplicadas. Migration 21 (cron timeout 30s) pendente.
 
 ---
 
@@ -555,3 +626,5 @@ VALUES ('<patient_id>', '<psych_id>', 800, 10, 4);
 | 1.7 | 2026-09-10 | Sprint 4: create_session + reschedule_session RPCs SD. psychologist_id de auth.uid(), conflito por overlap de intervalo, aal2, ownership. 12 RPCs SD. V20. |
 | 1.8 | 2026-09-10 | Sprint 5: patients.asaas_customer_id TEXT UNIQUE. D11 Interno, sem cifra, service_role only, excluido de SELECT grant, eliminavel por LGPD. V21. |
 | 1.9 | 2026-09-10 | Sprint 5: subscriptions status (pending_creation, creation_failed). Default pending_creation. UNIQUE parcial (live only). Trigger monotonic. asaas_customer_id vive em patients, nao em subscriptions. V22. |
+| 2.0 | 2026-09-10 | pg_cron + Vault: fn_cron_invoke_edge_function, 3 jobs (send-reminders, billing-rules, cron-cleanup). CRON_SECRET no Vault (R30). V23-V24. |
+| 2.1 | 2026-09-10 | Cron timeout: 30s explicito em net.http_post (cold start estourava 5s default). V25 (disparos falhos 24h). Warm-up rejeitado. |
